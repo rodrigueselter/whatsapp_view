@@ -19,14 +19,17 @@ somente leitura (`immutable=1`). Nada é gravado de volta no export.
 
 Requer apenas Python 3.9+ (sem dependências externas).
 
+**Para rodar no Windows: execute o `iniciar.ps1` com o PowerShell** (botão
+direito no arquivo → *Executar com o PowerShell*). Ele inicia o servidor e abre
+a interface no navegador; o `.zip` do export é enviado por ela.
+
 Linux / macOS:
 
 ```bash
 python3 -m wa_view caminho/para/export.zip --port 8000
 ```
 
-Windows, sem digitar comandos: clique com o botão direito em `iniciar.ps1` e
-escolha **Executar com o PowerShell**. Ele localiza o Python 3.9+ (`py`,
+Detalhes do `iniciar.ps1`: ele localiza o Python 3.9+ (`py`,
 `python` ou `python3`, ignorando o atalho da Microsoft Store), usa a próxima
 porta livre se a 8000 estiver ocupada, abre o navegador e encerra o servidor
 quando a janela é fechada. O `.zip` do export é enviado pela própria interface.
