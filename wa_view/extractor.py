@@ -2,6 +2,7 @@
 import hashlib
 import os
 import zipfile
+import zlib
 from pathlib import Path
 
 CHAT_DB_HINTS = ("chatstorage",)
@@ -124,16 +125,72 @@ class Extraction:
         return self.media_by_name.get(os.path.basename(local_path))
 
 
-def _safe_members(zf, dest):
+class ArchiveError(ValueError):
+    """ZIP inválido, corrompido, perigoso ou acima dos limites."""
+
+
+# Limites contra ZIPs malformados ou "zip bombs".
+DEFAULT_LIMITS = {
+    "max_members": 200_000,
+    "max_total_bytes": 16 * 1024 ** 3,   # 16 GB descompactados
+    "max_ratio": 200,                    # taxa de compressão suspeita por membro
+}
+
+
+def _is_symlink(info):
+    return (info.external_attr >> 16) & 0o170000 == 0o120000
+
+
+def safe_extract(zip_path, dest, limits=None):
+    """Extrai validando caminho, tipo de entrada, CRC e volume real gravado.
+
+    Os tamanhos do cabeçalho do ZIP podem ser falsos, por isso os bytes são
+    contados durante a cópia. Retorna o número de arquivos extraídos.
+    """
+    limits = {**DEFAULT_LIMITS, **(limits or {})}
     dest = Path(dest).resolve()
-    for info in zf.infolist():
-        target = (dest / info.filename).resolve()
-        if dest not in target.parents and target != dest:
-            raise ValueError(f"Caminho suspeito no ZIP: {info.filename}")
-        yield info
+    dest.mkdir(parents=True, exist_ok=True)
+    try:
+        zf = zipfile.ZipFile(zip_path)
+    except zipfile.BadZipFile as exc:
+        raise ArchiveError(f"Arquivo não é um ZIP válido: {exc}") from exc
+    written = 0
+    count = 0
+    with zf:
+        infos = zf.infolist()
+        if len(infos) > limits["max_members"]:
+            raise ArchiveError(f"ZIP com entradas demais ({len(infos)})")
+        for info in infos:
+            if info.flag_bits & 0x1:
+                raise ArchiveError("ZIP protegido por senha não é suportado")
+            target = (dest / info.filename).resolve()
+            if target != dest and dest not in target.parents:
+                raise ArchiveError(f"Caminho suspeito no ZIP: {info.filename}")
+            if _is_symlink(info):
+                continue  # links simbólicos são ignorados por segurança
+            if info.is_dir():
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+            if info.compress_size and info.file_size / info.compress_size > limits["max_ratio"] \
+                    and info.file_size > 50 * 1024 ** 2:
+                raise ArchiveError(f"Taxa de compressão suspeita em {info.filename}")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                with zf.open(info) as src, open(target, "wb") as out:
+                    for block in iter(lambda: src.read(1 << 20), b""):
+                        written += len(block)
+                        if written > limits["max_total_bytes"]:
+                            raise ArchiveError("Conteúdo descompactado excede o limite configurado")
+                        out.write(block)
+            except (zipfile.BadZipFile, zlib.error, EOFError) as exc:
+                raise ArchiveError(f"Entrada corrompida no ZIP ({info.filename}): {exc}") from exc
+            except NotImplementedError as exc:
+                raise ArchiveError(f"Método de compressão não suportado em {info.filename}") from exc
+            count += 1
+    return count
 
 
-def extract(source, workdir, extra_media=()):
+def extract(source, workdir, extra_media=(), limits=None):
     """Extrai ``source`` (ZIP ou diretório já extraído) para ``workdir``."""
     source = Path(source)
     workdir = Path(workdir)
@@ -143,8 +200,6 @@ def extract(source, workdir, extra_media=()):
     marker = workdir / ".extracted"
     expected = f"{source.resolve()}|{source.stat().st_size}|{int(source.stat().st_mtime)}"
     if not (marker.exists() and marker.read_text(encoding="utf-8") == expected):
-        with zipfile.ZipFile(source) as zf:
-            for info in _safe_members(zf, workdir):
-                zf.extract(info, workdir)
+        safe_extract(source, workdir, limits)
         marker.write_text(expected, encoding="utf-8")
     return Extraction(workdir, source_zip=source, extra_media=extra_media)

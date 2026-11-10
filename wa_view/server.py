@@ -6,13 +6,15 @@ import re
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
+
+from .upload import UploadError
 
 STATIC_DIR = Path(__file__).parent / "static"
 _RANGE = re.compile(r"bytes=(\d*)-(\d*)")
 
 
-def make_handler(store):
+def make_handler(state):
     class Handler(BaseHTTPRequestHandler):
         server_version = "wa_view/0.1"
         protocol_version = "HTTP/1.1"
@@ -35,7 +37,7 @@ def make_handler(store):
         def _not_found(self):
             self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 
-        def _send_file(self, path, mime=None, download_name=None):
+        def _send_file(self, path, mime=None, download_name=None, attachment=False):
             size = path.stat().st_size
             mime = mime or mimetypes.guess_type(str(path))[0] or "application/octet-stream"
             start, end = 0, size - 1
@@ -65,7 +67,8 @@ def make_handler(store):
             if status == HTTPStatus.PARTIAL_CONTENT:
                 self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
             if download_name:
-                self.send_header("Content-Disposition", f'inline; filename="{download_name}"')
+                disposition = "attachment" if attachment else "inline"
+                self.send_header("Content-Disposition", f'{disposition}; filename="{download_name}"')
             self.end_headers()
             if self.command == "HEAD":
                 return
@@ -85,9 +88,39 @@ def make_handler(store):
 
         def do_GET(self):
             try:
-                self._route(unquote(urlparse(self.path).path))
+                url = urlparse(self.path)
+                self.query = {k: v[-1] for k, v in parse_qs(url.query).items()}
+                self._route(unquote(url.path))
             except (BrokenPipeError, ConnectionResetError):
                 pass
+
+        def do_POST(self):
+            path = urlparse(self.path).path
+            if path != "/api/upload":
+                self.close_connection = True
+                return self._not_found()
+            try:
+                result = state.receive(self.rfile, self.headers)
+            except UploadError as exc:
+                # O corpo pode não ter sido lido por inteiro: encerra a conexão.
+                self.close_connection = True
+                return self._send_json({"error": exc.code, "message": exc.message}, exc.status)
+            except (BrokenPipeError, ConnectionResetError):
+                return None
+            except Exception as exc:  # noqa: BLE001 - erro inesperado vira 500 legível
+                self.close_connection = True
+                return self._send_json({"error": "internal", "message": f"Falha ao processar o upload: {exc}"},
+                                       HTTPStatus.INTERNAL_SERVER_ERROR)
+            return self._send_json(result)
+
+        def _int_param(self, name):
+            value = self.query.get(name)
+            if value in (None, ""):
+                return None
+            try:
+                return int(value)
+            except ValueError:
+                return None
 
         def _route(self, path):
             if path in ("/", "/index.html"):
@@ -97,8 +130,22 @@ def make_handler(store):
                 if STATIC_DIR.resolve() in target.parents and target.is_file():
                     return self._send_file(target)
                 return self._not_found()
+            if path == "/api/status":
+                return self._send_json(state.status())
+            store = state.store
+            if store is None and (path.startswith("/api/") or path.startswith("/media/")):
+                return self._send_json({"error": "no_export", "message": "Nenhum export carregado."},
+                                       HTTPStatus.CONFLICT)
             if path == "/api/summary":
-                return self._send_json(store.summary())
+                return self._send_json(store.summary() | {"upload": state.upload_info})
+            if path == "/api/media-items":
+                q = self.query
+                return self._send_json(store.media_index.query(
+                    chat_id=self._int_param("chat"), status=q.get("status") or None,
+                    kind=q.get("kind") or None, sender=q.get("sender") or None,
+                    offset=self._int_param("offset") or 0, limit=self._int_param("limit") or 100))
+            if path == "/api/media-summary":
+                return self._send_json(store.media_index.summary(self._int_param("chat")))
             if path == "/api/chats":
                 return self._send_json(store.chat_list())
             if path == "/api/calls":
@@ -123,13 +170,14 @@ def make_handler(store):
                 if not file_path:
                     return self._not_found()
                 from .extractor import sniff_mime
-                return self._send_file(file_path, sniff_mime(file_path), file_path.name)
+                return self._send_file(file_path, sniff_mime(file_path), file_path.name,
+                                       attachment=self.query.get("download") == "1")
             return self._not_found()
 
     return Handler
 
 
-def serve(store, host="127.0.0.1", port=8000):
-    httpd = ThreadingHTTPServer((host, port), make_handler(store))
+def serve(state, host="127.0.0.1", port=8000):
+    httpd = ThreadingHTTPServer((host, port), make_handler(state))
     httpd.daemon_threads = True
     return httpd

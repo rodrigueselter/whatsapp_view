@@ -186,6 +186,18 @@
 
   // ----------------------------------------------------------- chat list
   async function loadChats() {
+    const status = await fetch('/api/status').then((r) => r.json());
+    state.status = status;
+    if (!status.loaded) {
+      state.chats = []; state.summary = null;
+      $('intro-summary').textContent = 'Nenhum export carregado.';
+      $('intro-note').textContent = 'Envie o arquivo .zip exportado do WhatsApp para iniciar a análise. Os dados são processados apenas neste servidor.';
+      $('chat-list').textContent = '';
+      $('chat-list').appendChild(h('div', { class: 'chat-list-empty' }, 'Nenhum export carregado. Use o botão de upload acima.'));
+      document.dispatchEvent(new CustomEvent('wa:status', { detail: status }));
+      return;
+    }
+    $('intro-note').textContent = 'Visualização forense somente leitura. Selecione uma conversa à esquerda para exibir as mensagens.';
     const [chats, summary] = await Promise.all([
       fetch('/api/chats').then((r) => r.json()),
       fetch('/api/summary').then((r) => r.json()),
@@ -194,6 +206,18 @@
     state.summary = summary;
     renderIntro();
     renderChatList();
+    document.dispatchEvent(new CustomEvent('wa:status', { detail: status }));
+  }
+
+  /* Recarrega tudo após um novo upload. */
+  async function reloadExport() {
+    closeDrawer();
+    state.calls = null;
+    if (state.sidebar === 'calls') hideCalls();
+    state.currentChat = null; state.currentChatFull = null; state.messages = []; state.messageIndex = new Map();
+    $('conversation').hidden = true; $('media-panel').hidden = true; $('intro').hidden = false;
+    $('app').classList.remove('show-chat');
+    await loadChats();
   }
 
   function renderIntro() {
@@ -209,7 +233,8 @@
   function filteredChats() {
     const q = state.query.trim().toLowerCase();
     return state.chats.filter((c) => {
-      if (state.filter !== 'all' && c.type !== state.filter) return false;
+      if (state.filter === 'media') { if (!c.media || !c.media.total) return false; }
+      else if (state.filter !== 'all' && c.type !== state.filter) return false;
       if (!q) return true;
       return [c.name, c.phone, c.jid_normalized, c.last_message && c.last_message.text]
         .some((v) => v && String(v).toLowerCase().includes(q));
@@ -229,6 +254,13 @@
     list.appendChild(frag);
   }
 
+  function mediaBadge(m) {
+    const title = `${m.total} mídias referenciadas: ${m.ok} disponíveis, ${m.missing} ausentes, ${m.corrupted} corrompidas/divergentes`;
+    return h('span', { class: 'media-badge' + (m.corrupted ? ' has-corrupted' : '') + (m.ok ? ' has-ok' : ''), title },
+      icon('attach', 'mb-icon'), String(m.ok), h('span', { class: 'mb-total' }, '/' + m.total),
+      m.corrupted ? icon('warn', 'mb-warn') : null);
+  }
+
   function chatItem(chat) {
     const lm = chat.last_message;
     const preview = h('div', { class: 'chat-row-preview' });
@@ -244,6 +276,7 @@
     const badges = h('div', { class: 'badges' });
     if (chat.unread_count > 0) badges.appendChild(h('span', { class: 'unread-badge' }, chat.unread_count));
     if (chat.archived) badges.appendChild(h('span', { class: 'tag' }, 'arquivada'));
+    if (chat.media && chat.media.total) badges.appendChild(mediaBadge(chat.media));
     const ts = lm ? lm.timestamp : chat.last_message_date;
     const item = h('div', {
       class: 'chat-item' + (state.currentChat && state.currentChat.id === chat.id ? ' active' : ''),
@@ -265,6 +298,8 @@
     state.currentChat = chat;
     document.querySelectorAll('.chat-item').forEach((el) => el.classList.toggle('active', Number(el.dataset.id) === id));
     $('intro').hidden = true;
+    $('media-panel').hidden = true;
+    $('btn-media-panel').classList.remove('active');
     $('conversation').hidden = false;
     $('app').classList.add('show-chat');
     renderChatHeader(chat);
@@ -365,12 +400,13 @@
     const media = msg.media;
     if ((msg.type === 'image' || msg.type === 'video' || msg.type === 'gif' || msg.type === 'sticker') && media && media.available) {
       bubble.classList.add('has-media');
+      if (media.status === 'corrupted') bubble.appendChild(h('span', { class: 'integrity-flag', title: 'Arquivo divergente/corrompido — ver detalhes' }, icon('warn'), 'divergente'));
       if (senderEl) bubble.appendChild(senderEl);
       if (msg.type === 'video') {
         bubble.appendChild(h('video', { class: 'media-video', controls: '', preload: 'metadata', src: media.url }));
       } else {
         bubble.appendChild(h('img', { class: 'media-img', src: media.url, loading: 'lazy', alt: media.filename || 'imagem',
-          onclick: (e) => { e.stopPropagation(); openLightbox(media.url); } }));
+          onclick: (e) => { e.stopPropagation(); openMediaViewer(media, media.url); } }));
       }
       if (msg.text) bubble.appendChild(h('div', { class: 'media-caption' }, linkify(msg.text), spacer(msg), meta));
       else bubble.appendChild(h('div', { class: 'meta-overlay' }, h('span', null, fmtTime.format(toDate(msg.timestamp))), ticks(msg)));
@@ -403,7 +439,16 @@
           h('div', { class: 'msg-text' }, linkify(msg.text || ''), spacer(msg)));
       case 'audio':
         return audioEl(msg);
-      case 'image': case 'video': case 'gif': case 'sticker': case 'document':
+      case 'document':
+        if (media && media.available) {
+          return h('div', null, h('div', { class: 'card doc-card', onclick: (e) => { e.stopPropagation(); openMediaViewer(media, media.url); } },
+            icon('doc', 'media-icon'),
+            h('div', { class: 'card-body' }, h('div', { class: 'card-title' }, media.title || media.filename),
+              h('div', { class: 'card-sub' }, `${(media.mime || '').split('/').pop().toUpperCase()} · ${fmtBytes(media.actual_size)}`))),
+          msg.text ? h('div', { class: 'msg-text', style: 'margin-top:6px' }, linkify(msg.text)) : null);
+        }
+        return mediaMissing(msg);
+      case 'image': case 'video': case 'gif': case 'sticker':
         return mediaMissing(msg);
       case 'contact':
         return contactCard(msg);
@@ -517,6 +562,9 @@
     state.sidebar = 'calls';
     $('btn-calls').classList.add('active');
     $('chat-list').hidden = true;
+    $('chat-filters').hidden = true;
+    $('media-panel').hidden = true;
+    $('btn-media-panel').classList.remove('active');
     const panel = $('calls-panel');
     panel.hidden = false;
     $('chat-search').placeholder = 'Pesquisar chamadas';
@@ -532,6 +580,7 @@
     $('btn-calls').classList.remove('active');
     $('calls-panel').hidden = true;
     $('chat-list').hidden = false;
+    $('chat-filters').hidden = false;
     $('chat-search').placeholder = 'Pesquisar ou começar uma nova conversa';
     renderChatList();
   }
@@ -731,6 +780,8 @@
       const dl = kv([
         ['ID mídia', String(media.id), 'mono'],
         ['Disponível', media.available ? 'sim — arquivo presente no export' : 'não — somente metadados'],
+        ['Integridade', { ok: 'Íntegra', missing: 'Ausente', corrupted: 'Corrompida / divergente' }[media.status] || media.status],
+        ['Problemas', (media.issues || []).concat(media.warnings || []).map((c) => (window.WAMedia ? window.WAMedia.issueLabel(c) : c)).join('; ') || null],
         ['Arquivo', media.filename, 'mono'],
         ['Caminho original', media.local_path, 'mono'],
         ['Miniatura', media.thumbnail_path, 'mono'],
@@ -795,6 +846,7 @@
         ['Última', last ? fmtFull.format(toDate(last.timestamp)) + (last.timestamp.approx ? ' (aprox.)' : '') : null],
       ])),
     ];
+    if (window.WAMedia) parts.push(window.WAMedia.chatInfoSection(chat.id));
     if (chat.contact) {
       const c = chat.contact;
       parts.push(section('Agenda (Contacts.sqlite)', kv([
@@ -892,6 +944,12 @@
     el.classList.remove('highlight'); void el.offsetWidth; el.classList.add('highlight');
   }
 
+  /* Visualizador forense (media.js) com navegação pelas mídias da conversa; lightbox simples como reserva. */
+  function openMediaViewer(media, url) {
+    if (window.WAMedia && state.currentChat) window.WAMedia.openForChat(state.currentChat.id, media.id);
+    else openLightbox(url);
+  }
+
   function openLightbox(url) {
     const lb = $('lightbox');
     const content = lb.querySelector('.lightbox-content');
@@ -903,11 +961,11 @@
   // ---------------------------------------------------------------- eventos
   $('chat-search').addEventListener('input', (e) => { state.query = e.target.value; state.sidebar === 'calls' ? renderCalls() : renderChatList(); });
   $('btn-calls').addEventListener('click', () => state.sidebar === 'calls' ? hideCalls() : showCalls());
-  $('btn-filter').addEventListener('click', () => {
-    state.filter = state.filter === 'all' ? 'group' : state.filter === 'group' ? 'individual' : 'all';
-    const btn = $('btn-filter');
-    btn.classList.toggle('active', state.filter !== 'all');
-    btn.title = state.filter === 'all' ? 'Filtrar conversas' : state.filter === 'group' ? 'Exibindo apenas grupos' : 'Exibindo apenas conversas individuais';
+  $('chat-filters').addEventListener('click', (e) => {
+    const chip = e.target.closest('.chip');
+    if (!chip) return;
+    state.filter = chip.dataset.filter;
+    $('chat-filters').querySelectorAll('.chip').forEach((c) => c.classList.toggle('active', c === chip));
     renderChatList();
   });
   $('btn-chat-info').addEventListener('click', showChatInfo);
@@ -922,6 +980,12 @@
   });
   const backBtn = h('button', { class: 'icon-btn back-btn', html: ICONS.back, title: 'Voltar', onclick: () => { $('app').classList.remove('show-chat'); } });
   document.querySelector('.chat-header').prepend(backBtn);
+
+  window.WA = {
+    state, h, icon, b, append, $, ICONS, avatar, senderColor, toDate, fmtTime, fmtDate, fmtFull, fmtBytes, fmtDuration,
+    approxTitle, openChat, scrollToMessage, closeDrawer, openDrawer, section, kv, reloadExport, MEDIA_LABEL, MEDIA_ICON,
+    showMessage: (id) => { const m = state.messageIndex.get(id); if (m) showMessageDetails(m); },
+  };
 
   loadChats().catch((err) => { $('intro-summary').textContent = 'Erro ao carregar export: ' + err.message; });
 })();
