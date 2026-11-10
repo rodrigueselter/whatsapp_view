@@ -126,9 +126,9 @@ def extract(source, workdir):
     workdir.mkdir(parents=True, exist_ok=True)
     marker = workdir / ".extracted"
     expected = f"{source.resolve()}|{source.stat().st_size}|{int(source.stat().st_mtime)}"
-    if not (marker.exists() and marker.read_text() == expected):
+    if not (marker.exists() and marker.read_text(encoding="utf-8") == expected):
         with zipfile.ZipFile(source) as zf:
             for info in _safe_members(zf, workdir):
                 zf.extract(info, workdir)
-        marker.write_text(expected)
+        marker.write_text(expected, encoding="utf-8")
     return Extraction(workdir, source_zip=source)

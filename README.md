@@ -18,9 +18,21 @@ somente leitura (`immutable=1`). Nada é gravado de volta no export.
 
 Requer apenas Python 3.9+ (sem dependências externas).
 
+Linux / macOS:
+
 ```bash
 python3 -m wa_view caminho/para/export.zip --port 8000
 ```
+
+Windows (PowerShell), dentro da pasta do repositório:
+
+```powershell
+py -m wa_view "C:\caminho\para\export.zip" --port 8000
+```
+
+No Windows, `python3` costuma abrir o atalho da Microsoft Store. Use o
+inicializador `py` (instalado junto com o Python de python.org) ou `python`.
+Se nenhum funcionar, instale o Python 3 marcando "Add python.exe to PATH".
 
 Abra `http://127.0.0.1:8000/`. Opções:
 
