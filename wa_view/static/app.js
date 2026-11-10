@@ -625,6 +625,7 @@
         ['Conversas', String(s.chats)], ['Grupos', String(s.groups)], ['Mensagens', s.messages.toLocaleString('pt-BR')],
         ['Mídias vinculadas', `${s.media_linked} itens de mídia vinculados a ${integ.media_files ?? '—'} arquivos do export`],
         ['Contatos (agenda)', String(s.contacts)],
+        ['Pastas de mídia extras', (integ.extra_media_dirs && integ.extra_media_dirs.length) ? integ.extra_media_dirs.join(' · ') : null, 'mono'],
         ['Fuso horário de exibição', TZ],
       ])),
       section('Integridade (SHA-256)', kv([

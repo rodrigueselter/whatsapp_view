@@ -58,9 +58,10 @@ def sniff_mime(path):
 class Extraction:
     """Resultado da extração: caminhos dos bancos e índice de mídias."""
 
-    def __init__(self, root, source_zip=None):
+    def __init__(self, root, source_zip=None, extra_media=()):
         self.root = Path(root)
         self.source_zip = Path(source_zip) if source_zip else None
+        self.extra_media = [Path(d) for d in extra_media]
         self.chat_db = None
         self.contacts_db = None
         self.media_by_name = {}
@@ -86,11 +87,20 @@ class Extraction:
             self.media_by_name.setdefault(path.name, path)
         if self.chat_db is None:
             raise FileNotFoundError("ChatStorage.sqlite não encontrado no ZIP/pasta")
+        # Pastas de mídia adicionais (ex.: extração completa do aparelho).
+        # Arquivos do próprio export têm prioridade em caso de nome repetido.
+        for folder in self.extra_media:
+            if not folder.is_dir():
+                raise NotADirectoryError(f"Pasta de mídia não encontrada: {folder}")
+            for path in sorted(folder.rglob("*")):
+                if path.is_file() and not path.name.lower().endswith((".sqlite", "-wal", "-shm", ".plist")):
+                    self.media_by_name.setdefault(path.name, path)
         self.integrity = {
             "source_zip": self._file_info(self.source_zip) if self.source_zip else None,
             "chat_db": self._file_info(self.chat_db),
             "contacts_db": self._file_info(self.contacts_db) if self.contacts_db else None,
             "media_files": len(self.media_by_name),
+            "extra_media_dirs": [str(d) for d in self.extra_media],
         }
 
     def _file_info(self, path):
@@ -117,12 +127,12 @@ def _safe_members(zf, dest):
         yield info
 
 
-def extract(source, workdir):
+def extract(source, workdir, extra_media=()):
     """Extrai ``source`` (ZIP ou diretório já extraído) para ``workdir``."""
     source = Path(source)
     workdir = Path(workdir)
     if source.is_dir():
-        return Extraction(source)
+        return Extraction(source, extra_media=extra_media)
     workdir.mkdir(parents=True, exist_ok=True)
     marker = workdir / ".extracted"
     expected = f"{source.resolve()}|{source.stat().st_size}|{int(source.stat().st_mtime)}"
@@ -131,4 +141,4 @@ def extract(source, workdir):
             for info in _safe_members(zf, workdir):
                 zf.extract(info, workdir)
         marker.write_text(expected, encoding="utf-8")
-    return Extraction(workdir, source_zip=source)
+    return Extraction(workdir, source_zip=source, extra_media=extra_media)

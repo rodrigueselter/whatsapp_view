@@ -38,6 +38,9 @@ Abra `http://127.0.0.1:8000/`. Opções:
 
 - `--workdir DIR` diretório de extração (padrão: `<temp>/wa_view_extract`); uma
   pasta já extraída também pode ser passada no lugar do ZIP;
+- `--media DIR` pasta extra com arquivos de mídia (pode ser repetida). Use
+  quando o ZIP não traz todas as mídias referenciadas no banco, por exemplo
+  apontando para a pasta `Message/Media` de uma extração completa do aparelho;
 - `--summary` apenas imprime o resumo da carga (contagens e SHA-256) e sai;
 - `--host` endereço de escuta (padrão `127.0.0.1`).
 
@@ -70,6 +73,10 @@ Abra `http://127.0.0.1:8000/`. Opções:
   `ZSORT`, que não é afetado.
 - JIDs trazem sufixos de anonimização (`~N`). São exibidos brutos nos
   detalhes e normalizados para correlação com agenda e membros de grupo.
+- O banco referencia 2.984 arquivos de mídia, mas o ZIP traz só 230
+  (63 de 1.136 imagens, 0 de 113 vídeos, 170 de 1.735 áudios). Os demais
+  aparecem como "não incluído no export", com nome e tamanho declarados.
+  Para exibi-los é preciso obter os arquivos originais e usar `--media`.
 - Arquivos `.aac` do export são, na prática, Ogg/Opus; o MIME é detectado
   pelo conteúdo para que o navegador reproduza corretamente.
 
