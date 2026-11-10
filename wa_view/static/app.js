@@ -306,7 +306,7 @@
     const box = $('messages');
     box.textContent = '';
     box.appendChild(h('div', { class: 'messages-loading' }, 'Carregando mensagens…'));
-    if (state.drawer === 'message' || state.drawer === 'search') closeDrawer();
+    if (state.drawer === 'message' || state.drawer === 'search' || state.drawer === 'ai') closeDrawer();
     if (state.drawer === 'chat') showChatInfo();
     try {
       const [full, messages] = await Promise.all([
@@ -847,6 +847,7 @@
       ])),
     ];
     if (window.WAMedia) parts.push(window.WAMedia.chatInfoSection(chat.id));
+    if (window.WAAI) parts.push(window.WAAI.chatInfoSection(chat.id));
     if (chat.contact) {
       const c = chat.contact;
       parts.push(section('Agenda (Contacts.sqlite)', kv([

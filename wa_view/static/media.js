@@ -208,6 +208,7 @@
       h('button', { class: 'icon-btn', title: 'Fechar análise', html: ICONS.back, onclick: closePanel }),
       h('div', { class: 'panel-title' }, h('div', { class: 'chat-name' }, 'Análise forense de mídias'),
         h('div', { class: 'chat-sub' }, panel.chatId ? 'Escopo: conversa selecionada' : 'Escopo: todo o export')),
+      window.WAAI ? window.WAAI.panelButton(panel.chatId) : null,
       scope));
     const body = h('div', { class: 'panel-body' }, h('div', { class: 'messages-loading' }, 'Calculando…'));
     el.appendChild(body);

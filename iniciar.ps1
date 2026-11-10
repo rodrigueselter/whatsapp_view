@@ -1,48 +1,49 @@
 <#
 .SYNOPSIS
-    Inicia o visualizador forense WhatsApp (wa_view) no Windows sem usar o terminal.
+    Inicia o visualizador forense WhatsApp (wa_view) no Windows, sem usar o terminal.
 
 .DESCRIPTION
-    Localiza o Python 3, escolhe o export (.zip ou pasta) numa janela de seleção
-    de arquivo — ou sobe a interface para enviar o .zip pelo navegador —, inicia
-    o servidor local e abre o navegador. Feche a janela ou pressione Ctrl+C para
-    encerrar.
+    Localiza o Python 3.9+, inicia o servidor local e abre a interface no
+    navegador. O export (.zip) é enviado pela própria interface (botão de upload
+    ou arrastando o arquivo para a janela). Feche a janela ou pressione Ctrl+C
+    para encerrar.
 
-    Equivale a:
-        py -m wa_view "C:\caminho\para\export.zip" --port 8000
-        py -m wa_view --port 8000            (interface de upload)
+    Equivale a:  py -m wa_view --port 8000
 
-.PARAMETER Export
-    Caminho do .zip (ou pasta já extraída). Se omitido, abre uma janela para escolher.
-
-.PARAMETER Interface
-    Não pergunta pelo arquivo: sobe o servidor vazio e o .zip é enviado pela interface.
+    Como executar: clique com o botão direito em iniciar.ps1 e escolha
+    "Executar com o PowerShell". Se o Windows bloquear o script, execute uma vez:
+        Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+        Unblock-File .\iniciar.ps1
 
 .PARAMETER Port
     Porta de escuta (padrão 8000). Se estiver ocupada, usa a próxima livre.
 
 .PARAMETER Media
-    Pastas extras de mídia (equivale a --media, pode repetir: -Media A,B).
+    Pastas extras de mídia (equivale a --media; várias: -Media A,B).
+
+.PARAMETER AskKey
+    Pergunta a chave de API do OpenCode (digitação oculta) e a passa só ao
+    servidor desta execução. Nada é gravado em disco. Alternativa: definir a
+    variável de ambiente OPENCODE_API_KEY, ou informar a chave no painel de IA.
 
 .PARAMETER NoBrowser
     Não abre o navegador automaticamente.
 
 .EXAMPLE
     .\iniciar.ps1
-    .\iniciar.ps1 -Export "D:\casos\export.zip" -Port 8080
-    .\iniciar.ps1 -Interface
+    .\iniciar.ps1 -Port 8080 -AskKey
+    .\iniciar.ps1 -Media "D:\casos\Media" -NoBrowser
 #>
 [CmdletBinding()]
 param(
-    [string]$Export,
-    [switch]$Interface,
     [int]$Port = 8000,
     [string[]]$Media,
+    [switch]$AskKey,
     [switch]$NoBrowser
 )
 
 $ErrorActionPreference = "Stop"
-$Host.UI.RawUI.WindowTitle = "wa_view — visualizador forense WhatsApp"
+$Host.UI.RawUI.WindowTitle = "wa_view - visualizador forense WhatsApp"
 
 function Write-Step($msg) { Write-Host "[wa_view] $msg" -ForegroundColor Cyan }
 function Write-Fail($msg) {
@@ -90,28 +91,16 @@ if (-not $py) {
 }
 Write-Step "Python $($py.Version) ($($py.Exe))"
 
-# ---------------------------------------------------------------- export
-if (-not $Interface -and -not $Export) {
-    Write-Step "Escolha o export (.zip). Cancele para enviar pelo navegador."
-    try {
-        Add-Type -AssemblyName System.Windows.Forms
-        $dlg = New-Object System.Windows.Forms.OpenFileDialog
-        $dlg.Title = "Selecione o export do WhatsApp (.zip) — Cancelar = enviar pela interface"
-        $dlg.Filter = "Export WhatsApp (*.zip)|*.zip|Todos os arquivos (*.*)|*.*"
-        $dlg.CheckFileExists = $true
-        if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $Export = $dlg.FileName }
-    } catch {
-        $typed = Read-Host "Caminho do .zip (vazio = enviar pela interface)"
-        if ($typed) { $Export = $typed.Trim('"') }
-    }
+# ---------------------------------------------------------------- chave OpenCode
+if ($AskKey) {
+    $secure = Read-Host "Chave de API do OpenCode (não é exibida nem gravada)" -AsSecureString
+    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+    try { $plain = [Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr) }
+    finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
+    if ($plain) { $env:OPENCODE_API_KEY = $plain; Write-Step "Chave recebida (somente nesta execução)." }
 }
-if ($Export) {
-    if (-not (Test-Path $Export)) { Write-Fail "Export não encontrado: $Export" }
-    $Export = (Resolve-Path $Export).Path
-    Write-Step "Export: $Export"
-} else {
-    Write-Step "Sem export: o .zip será enviado pela interface no navegador."
-}
+if ($env:OPENCODE_API_KEY) { Write-Step "Análise por IA: chave do OpenCode disponível." }
+else { Write-Step "Análise por IA: sem chave (informe-a no painel de IA da interface, se for usar)." }
 
 # ---------------------------------------------------------------- porta
 function Test-PortFree([int]$p) {
@@ -129,9 +118,7 @@ while (-not (Test-PortFree $chosen)) {
 $url = "http://127.0.0.1:$chosen/"
 
 # ---------------------------------------------------------------- servidor
-$pyArgs = @($py.Args + @("-m", "wa_view"))
-if ($Export) { $pyArgs += $Export }
-$pyArgs += @("--port", "$chosen")
+$pyArgs = @($py.Args + @("-m", "wa_view", "--port", "$chosen"))
 foreach ($m in $Media) { if ($m) { $pyArgs += @("--media", $m) } }
 # Start-Process recebe uma única linha; caminhos com espaço precisam de aspas.
 $argLine = ($pyArgs | ForEach-Object { if ($_ -match '[\s"]') { '"' + ($_ -replace '"', '\"') + '"' } else { $_ } }) -join ' '
@@ -139,9 +126,9 @@ $argLine = ($pyArgs | ForEach-Object { if ($_ -match '[\s"]') { '"' + ($_ -repla
 Write-Step "Iniciando: $($py.Exe) $argLine"
 $proc = Start-Process -FilePath $py.Exe -ArgumentList $argLine -NoNewWindow -PassThru
 
-# Abre o navegador assim que o servidor responder (carga do export pode levar segundos).
+# Abre o navegador assim que o servidor responder.
 $ready = $false
-for ($i = 0; $i -lt 600; $i++) {
+for ($i = 0; $i -lt 120; $i++) {
     if ($proc.HasExited) { break }
     try {
         $null = Invoke-WebRequest -Uri "$($url)api/status" -UseBasicParsing -TimeoutSec 2
@@ -159,7 +146,7 @@ if (-not $ready) {
 }
 
 Write-Host ""
-Write-Host "Feche esta janela ou pressione Ctrl+C para encerrar o visualizador." -ForegroundColor Green
+Write-Host "Envie o .zip do export pela interface. Feche esta janela ou pressione Ctrl+C para encerrar." -ForegroundColor Green
 try {
     Wait-Process -Id $proc.Id
 } finally {
