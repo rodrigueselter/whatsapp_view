@@ -9,6 +9,7 @@ from collections import defaultdict
 
 from .dates import timestamp
 from .extractor import sha256_file, sniff_mime
+from .media_analysis import MediaIndex, assess
 from .receipts import parse_receipts
 
 # ZWAMESSAGE.ZMESSAGETYPE
@@ -122,6 +123,7 @@ class ChatStore:
             self._load_messages(conn, members)
         finally:
             conn.close()
+        self.media_index = MediaIndex(self)
 
     def _load_push_names(self, conn):
         if not _has_table(conn, "ZWAPROFILEPUSHNAME"):
@@ -265,7 +267,7 @@ class ChatStore:
                 "flags": r["ZFLAGS"],
                 "starred": bool(r["ZSTARRED"]),
                 "parent_id": r["ZPARENTMESSAGE"],
-                "media": media.get(r["ZMEDIAITEM"]) if r["ZMEDIAITEM"] else None,
+                "media": self._assess_media(media.get(r["ZMEDIAITEM"]), mtype) if r["ZMEDIAITEM"] else None,
                 "link": link_meta.get(r["Z_PK"]),
                 "receipts": receipts.get(r["Z_PK"], []),
                 "group_event": None,
@@ -361,9 +363,19 @@ class ChatStore:
                 "cloud_status": r["ZCLOUDSTATUS"],
                 "has_media_key": r["ZMEDIAKEY"] is not None,
                 "sha256": None,  # calculado sob demanda (ver media_hash)
+                "status": None, "issues": [], "warnings": [],
             }
             if path:
                 self._media_cache[r["Z_PK"]] = path
+        return media
+
+    def _assess_media(self, media, kind):
+        if media is None:
+            return None
+        if media["status"] is None:
+            path = self._media_cache.get(media["id"])
+            status, issues, warnings = assess(kind, media["local_path"], path, media["mime"], media["declared_size"])
+            media.update(status=status, issues=issues, warnings=warnings)
         return media
 
     def _load_link_items(self, conn):
@@ -412,6 +424,7 @@ class ChatStore:
             "groups": sum(1 for c in self.chats if c["type"] == "group"),
             "messages": sum(len(m) for m in self.messages_by_chat.values()),
             "media_linked": len(self._media_cache),
+            "media_status": {k: v for k, v in self.media_index.summary()["totals"].items() if k in ("total", "ok", "missing", "corrupted")},
             "contacts": len(self.contacts.by_wa_id),
             "integrity": self.extraction.integrity,
         }
@@ -419,7 +432,7 @@ class ChatStore:
     def chat_list(self):
         return [
             {k: v for k, v in c.items() if k not in ("participants", "group", "contact")}
-            | {"participant_count": len(c["participants"])}
+            | {"participant_count": len(c["participants"]), "media": self.media_index.chat_counts(c["id"])}
             for c in self.chats
         ]
 

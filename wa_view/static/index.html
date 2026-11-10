@@ -13,8 +13,8 @@
     <header class="pane-header">
       <div class="avatar avatar-40" data-avatar="me"></div>
       <div class="header-icons">
-        <button class="icon-btn" title="Status" data-icon="status"></button>
-        <button class="icon-btn" title="Nova conversa" data-icon="chat"></button>
+        <button class="icon-btn" id="btn-upload" title="Carregar export (.zip)" data-icon="upload"></button>
+        <button class="icon-btn" id="btn-media-panel" title="Análise forense de mídias" data-icon="chart"></button>
         <button class="icon-btn" id="btn-case-info" title="Informações do caso" data-icon="menu"></button>
       </div>
     </header>
@@ -23,7 +23,12 @@
         <span class="search-icon" data-icon="search"></span>
         <input id="chat-search" type="text" placeholder="Pesquisar ou começar uma nova conversa" autocomplete="off">
       </div>
-      <button class="icon-btn filter-btn" id="btn-filter" title="Filtrar conversas" data-icon="filter"></button>
+    </div>
+    <div class="chip-row" id="chat-filters" role="tablist" aria-label="Filtrar conversas">
+      <button class="chip active" data-filter="all" role="tab">Tudo</button>
+      <button class="chip" data-filter="individual" role="tab">Individuais</button>
+      <button class="chip" data-filter="group" role="tab">Grupos</button>
+      <button class="chip" data-filter="media" role="tab">Com mídia</button>
     </div>
     <div id="chat-list" class="chat-list" role="list"></div>
   </aside>
@@ -34,10 +39,13 @@
         <div class="intro-art" data-icon="intro"></div>
         <h1>WhatsApp Web</h1>
         <p id="intro-summary">Carregando export…</p>
-        <p class="intro-note">Visualização forense somente leitura. Selecione uma conversa à esquerda para exibir as mensagens.</p>
+        <p class="intro-note" id="intro-note">Visualização forense somente leitura. Selecione uma conversa à esquerda para exibir as mensagens.</p>
+        <div id="upload-zone" class="upload-zone"></div>
         <div class="intro-lock"><span data-icon="lock"></span> Os dados exibidos provêm exclusivamente do export carregado.</div>
       </div>
     </section>
+
+    <section id="media-panel" class="media-panel" hidden></section>
 
     <section id="conversation" class="conversation" hidden>
       <header class="pane-header chat-header">
@@ -70,6 +78,10 @@
   </aside>
 </div>
 
+<div id="upload-modal" class="modal" hidden></div>
+<div id="viewer" class="viewer" hidden></div>
+<input type="file" id="upload-input" accept=".zip,application/zip,application/x-zip-compressed" hidden>
+
 <div id="lightbox" class="lightbox" hidden>
   <button class="icon-btn lightbox-close" data-icon="close" title="Fechar"></button>
   <div class="lightbox-content"></div>
@@ -77,5 +89,6 @@
 
 <script src="/static/icons.js"></script>
 <script src="/static/app.js"></script>
+<script src="/static/media.js"></script>
 </body>
 </html>
