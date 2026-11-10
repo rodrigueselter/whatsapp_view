@@ -14,7 +14,10 @@
     summary: null,
     sidebar: 'chats',       // 'chats' | 'calls'
     calls: null,            // histórico de chamadas (/api/calls), carregado sob demanda
+    showNotices: false,     // exibir avisos do aplicativo (criptografia E2E) na conversa
   };
+  const HIDDEN_NOTICE_TYPES = new Set(['e2e_notice', 'system']);
+  function isHidden(msg) { return !state.showNotices && HIDDEN_NOTICE_TYPES.has(msg.type); }
   const SENDER_COLORS = ['#1f7aec', '#fe6a5e', '#ef697a', '#dd6f5a', '#02a698', '#2f88c7',
     '#6bcbef', '#35cd96', '#f3b53e', '#a364f5', '#e542a3', '#91ab01', '#d26523', '#5d86e0'];
   const MEDIA_LABEL = {
@@ -26,6 +29,8 @@
     location: 'location', document: 'doc', gif: 'video', sticker: 'camera', call: 'callMissed', deleted: 'blocked',
     e2e_notice: 'lock', system: 'lock' };
   const CALL_KIND_PT = { voice: 'voz', video: 'vídeo' };
+  const OUTCOME_PT = { ended: 'atendida / encerrada', missed: 'perdida', rejected: 'recusada', failed: 'falhou', unknown: 'não registrado' };
+  const DIRECTION_PT = { incoming: 'recebida', outgoing: 'efetuada', unknown: 'não registrada' };
   const E2E_TEXT = 'As mensagens enviadas para esta conversa e as chamadas agora são protegidas com a criptografia de ponta a ponta.';
   const SYSTEM_TYPES = new Set(['group_event', 'e2e_notice', 'system']);
   const STATUS_PT = { received: 'Recebida', pending: 'Pendente', sent: 'Enviada', failed: 'Falha no envio',
@@ -158,8 +163,21 @@
   function callLabel(call) {
     if (!call) return 'Chamada perdida';
     const kind = CALL_KIND_PT[call.kind];
-    const base = kind ? `Chamada de ${kind} perdida` : `Chamada perdida (subtipo ${call.kind_code})`;
-    return call.direction === 'outgoing' ? base.replace('perdida', 'não atendida') : base;
+    const k = kind ? ` de ${kind}` : '';
+    const outcome = call.outcome || 'missed';
+    switch (outcome) {
+      case 'ended': return `Chamada${k} ${call.direction === 'outgoing' ? 'efetuada' : call.direction === 'incoming' ? 'recebida' : 'atendida'}`;
+      case 'missed':
+        if (!kind && call.source !== 'call_history') return `Chamada perdida (subtipo ${call.kind_code})`;
+        return call.direction === 'outgoing' ? `Chamada${k} não atendida` : `Chamada${k} perdida`;
+      case 'rejected': return `Chamada${k} recusada`;
+      case 'failed': return `Chamada${k} falhou`;
+      default: return `Chamada${k} (resultado ${call.outcome_code ?? '?'})`;
+    }
+  }
+  function outcomeText(c) {
+    const o = OUTCOME_PT[c.outcome] || `código ${c.outcome_code}`;
+    return c.outcome_code !== null && c.outcome_code !== undefined ? `${o} (ZOUTCOME ${c.outcome_code})` : o;
   }
   function msgLabel(m) {
     if (m.type === 'call') return callLabel(m.call || { kind: m.call_kind, kind_code: '?' });
@@ -184,7 +202,7 @@
     p.textContent = '';
     p.appendChild(h('div', { class: 'intro-stats' },
       stat(s.chats, 'conversas'), stat(s.groups, 'grupos'), stat(s.messages, 'mensagens'),
-      stat(s.media_linked, 'mídias'), stat(s.contacts, 'contatos'), stat(s.calls, 'chamadas perdidas')));
+      stat(s.media_linked, 'mídias'), stat(s.contacts, 'contatos'), stat(s.calls, s.calls_from_history ? 'chamadas' : 'chamadas perdidas')));
     function stat(v, l) { return h('div', { class: 'intro-stat' }, b(v.toLocaleString('pt-BR')), h('span', null, l)); }
   }
 
@@ -241,7 +259,7 @@
   }
 
   // ------------------------------------------------------------ conversa
-  async function openChat(id, focusMessageId) {
+  async function openChat(id, focusMessageId, afterOpen) {
     const chat = state.chats.find((c) => c.id === id);
     if (!chat) return;
     state.currentChat = chat;
@@ -266,8 +284,9 @@
       state.messageIndex = new Map(messages.map((m) => [m.id, m]));
       renderChatHeader(chat, full);
       renderMessages(messages);
-      if (focusMessageId) {
-        scrollToMessage(focusMessageId);
+      if (focusMessageId) scrollToMessage(focusMessageId);
+      if (afterOpen) afterOpen();
+      else if (focusMessageId) {
         const target = state.messageIndex.get(focusMessageId);
         if (target) showMessageDetails(target);
       }
@@ -298,6 +317,7 @@
     const frag = document.createDocumentFragment();
     let lastDay = null, lastSenderKey = null, lastWasSystem = false;
     for (const msg of messages) {
+      if (isHidden(msg)) continue;
       const d = toDate(msg.timestamp);
       const key = dayKey(d);
       if (key !== lastDay) {
@@ -400,14 +420,18 @@
 
   function callCard(msg) {
     const call = msg.call || {};
+    const hist = call.history;
+    const shown = hist || call;
     const when = msg.timestamp ? `às ${fmtTime.format(toDate(msg.timestamp))}` : '';
     const who = state.currentChat.type === 'group' && call.peer_name ? ` · ${call.peer_name}` : '';
-    const sub = `${when}${who}` || 'horário não registrado';
+    const dur = hist && hist.outcome === 'ended' && hist.duration ? ` · ${fmtDuration(hist.duration)}` : '';
+    const sub = `${when}${who}${dur}` || 'horário não registrado';
+    const missed = shown.outcome !== 'ended';
     return h('div', { class: 'call-card' },
-      h('div', { class: 'call-ico' }, icon(call.kind === 'video' ? 'video' : 'callMissed')),
+      h('div', { class: 'call-ico' + (missed ? '' : ' ended') }, icon(shown.kind === 'video' ? 'video' : (missed ? 'callMissed' : 'call'))),
       h('div', { class: 'call-body' },
-        h('div', { class: 'call-title' }, callLabel(call)),
-        h('div', { class: 'call-sub' }, icon(call.direction === 'outgoing' ? 'callOut' : 'callIn', 'call-arrow missed'), sub)));
+        h('div', { class: 'call-title' }, callLabel(shown)),
+        h('div', { class: 'call-sub' }, icon(shown.direction === 'outgoing' ? 'callOut' : 'callIn', 'call-arrow ' + (missed ? 'missed' : 'ended')), sub)));
   }
 
   function mediaMissing(msg) {
@@ -528,11 +552,12 @@
       e.n++; if (!e.last || (c.timestamp && c.timestamp.unix > e.last.unix)) e.last = c.timestamp;
       byPeer.set(key, e);
     }
-    panel.appendChild(h('div', { class: 'calls-head' },
-      h('div', { class: 'calls-title' }, 'Chamadas'),
-      h('div', { class: 'calls-sub' }, all.length
-        ? `${all.length} registro${all.length > 1 ? 's' : ''} de chamada perdida em ${byPeer.size} contato${byPeer.size > 1 ? 's' : ''} · atendidas não constam (CallHistory.sqlite ausente)`
-        : 'Nenhum registro de chamada neste export')));
+    const s = state.summary || {};
+    const headSub = !all.length ? 'Nenhum registro de chamada neste export'
+      : s.calls_from_history
+        ? `${all.length} chamada${all.length > 1 ? 's' : ''} em ${byPeer.size} contato${byPeer.size > 1 ? 's' : ''} · ${s.calls_from_history} do CallHistory.sqlite, ${s.calls_from_chat} só como aviso de perdida na conversa`
+        : `${all.length} registro${all.length > 1 ? 's' : ''} de chamada perdida em ${byPeer.size} contato${byPeer.size > 1 ? 's' : ''} · atendidas não constam (CallHistory.sqlite ausente)`;
+    panel.appendChild(h('div', { class: 'calls-head' }, h('div', { class: 'calls-title' }, 'Chamadas'), h('div', { class: 'calls-sub' }, headSub)));
     if (!calls.length) {
       panel.appendChild(h('div', { class: 'chat-list-empty' }, all.length ? 'Nenhuma chamada corresponde à busca' : 'Sem chamadas'));
       return;
@@ -548,18 +573,55 @@
       const d = toDate(c.timestamp);
       const key = dayKey(d);
       if (key !== lastDay) { frag.appendChild(h('div', { class: 'calls-day' }, dayLabel(d))); lastDay = key; }
-      frag.appendChild(h('div', { class: 'chat-item call-item', role: 'listitem', onclick: () => openChat(c.chat_id, c.message_id) },
+      const missed = c.outcome !== 'ended';
+      const open = () => c.chat_id
+        ? openChat(c.chat_id, c.message_id, c.source === 'call_history' ? () => showCallDetails(c) : null)
+        : showCallDetails(c);
+      const extra = c.outcome === 'ended' && c.duration ? ` · ${fmtDuration(c.duration)}` : (c.contact && c.contact.phone ? ' · ' + c.contact.phone : (c.peer_jid_normalized && c.chat_type !== 'group' ? ' · +' + c.peer_jid_normalized.split('@')[0] : ''));
+      frag.appendChild(h('div', { class: 'chat-item call-item', role: 'listitem', onclick: open },
         avatar(c.chat_type === 'group' ? 'group' : 'user', 49),
         h('div', { class: 'chat-item-body' },
           h('div', { class: 'chat-row' },
-            h('div', { class: 'chat-row-title missed' }, c.peer_name + (c.chat_type === 'group' ? ` · ${c.chat_name}` : '')),
+            h('div', { class: 'chat-row-title' + (missed ? ' missed' : '') }, c.chat_type === 'group' ? c.chat_name : c.peer_name),
             h('div', { class: 'chat-row-time' }, d ? fmtTime.format(d) : '')),
           h('div', { class: 'chat-row' },
-            h('div', { class: 'chat-row-preview' }, icon(c.direction === 'outgoing' ? 'callOut' : 'callIn', 'call-arrow missed'),
-              h('span', { class: 'preview-text' }, `${callLabel(c)}${c.contact && c.contact.phone ? ' · ' + c.contact.phone : (c.peer_jid_normalized ? ' · +' + c.peer_jid_normalized.split('@')[0] : '')}`)),
-            h('div', { class: 'badges' }, icon(c.kind === 'video' ? 'video' : 'call', 'media-icon'))))));
+            h('div', { class: 'chat-row-preview' }, icon(c.direction === 'outgoing' ? 'callOut' : 'callIn', 'call-arrow ' + (missed ? 'missed' : 'ended')),
+              h('span', { class: 'preview-text' }, `${callLabel(c)}${extra}`)),
+            h('div', { class: 'badges' }, c.source === 'chat' ? h('span', { class: 'tag', title: 'Registrada apenas como aviso na conversa (ZWAMESSAGE)' }, 'conversa') : null,
+              icon(c.kind === 'video' ? 'video' : 'call', 'media-icon'))))));
     }
     panel.appendChild(frag);
+  }
+
+  function showCallDetails(c) {
+    const rows = [
+      ['Interpretação', callLabel(c)],
+      ['Fonte', c.source === 'call_history' ? `CallHistory.sqlite — ZWACDCALLEVENT Z_PK ${c.id}` : 'ZWAMESSAGE (aviso na conversa)', 'wrap'],
+      ['Tipo', `${CALL_KIND_PT[c.kind] ? 'chamada de ' + CALL_KIND_PT[c.kind] : 'não registrado'}${c.kind_code !== null && c.kind_code !== undefined ? ` (ZVIDEO ${c.kind_code})` : ''}`],
+      ['Resultado', outcomeText(c), 'wrap'],
+      ['Direção', `${DIRECTION_PT[c.direction] || c.direction}${c.incoming_raw !== null && c.incoming_raw !== undefined ? ` (ZINCOMING ${c.incoming_raw})` : c.creator_jid ? ' (inferida pelo criador da chamada)' : ''}`, 'wrap'],
+      ['Perdida (ZMISSED)', c.missed_raw !== null && c.missed_raw !== undefined ? `${c.missed_raw ? 'sim' : 'não'}${c.missed_reason !== null && c.missed_reason !== undefined ? ` · motivo ${c.missed_reason}` : ''}` : null],
+      ...tsRows('Início', c.timestamp),
+      ...(c.end_timestamp ? tsRows('Fim', c.end_timestamp) : []),
+      ['Duração', c.duration !== null && c.duration !== undefined ? `${fmtDuration(c.duration)} (${c.duration} s)` : null],
+      ['Interlocutor', c.peer_name], ['JID interlocutor', c.peer_jid, 'mono'],
+      ['Grupo (JID)', c.group_jid, 'mono'], ['Criador da chamada (JID)', c.creator_jid, 'mono'],
+      ['ID da chamada', c.call_id, 'mono'],
+      ['Bytes enviados / recebidos', c.bytes_sent !== null && c.bytes_sent !== undefined ? `${fmtBytes(c.bytes_sent)} / ${fmtBytes(c.bytes_received)}` : null],
+      ['Evento agregado (Z_PK)', c.aggregate_id !== null && c.aggregate_id !== undefined ? String(c.aggregate_id) : null, 'mono'],
+      ['Aviso na conversa', c.message_id ? `mensagem Z_PK ${c.message_id}` : (c.chat_id ? 'nenhum' : null), 'mono'],
+    ];
+    const parts = [section('Chamada', kv(rows))];
+    if (c.participants && c.participants.length) {
+      parts.push(section(`${c.participants.length} participantes (ZWACDCALLEVENTPARTICIPANT)`, ...c.participants.map((p) => h('div', { class: 'participant' }, avatar('user', 40),
+        h('div', { class: 'p-body' }, h('div', { class: 'p-name', style: `color:${p.is_me ? 'var(--primary-strong)' : senderColor(p.jid)}` }, p.name),
+          h('div', { class: 'p-jid mono' }, p.jid, p.outcome ? ` · ${OUTCOME_PT[p.outcome] || p.outcome} (${p.outcome_code})` : '')),
+        p.is_me ? h('span', { class: 'admin' }, 'titular') : null))));
+    }
+    if (c.chat_id) parts.push(section(null, h('button', { class: 'small-btn', onclick: () => openChat(c.chat_id, c.message_id, () => showCallDetails(c)) }, `abrir conversa "${c.chat_name}"`)));
+    else parts.push(section(null, h('div', { class: 'kv' }, h('dd', { class: 'muted' }, 'Sem conversa correspondente no ChatStorage.sqlite.'))));
+    openDrawer('call', 'Dados da chamada', parts);
+    if (c.message_id) { const el = document.querySelector(`.msg[data-id="${c.message_id}"]`); if (el) { el.classList.remove('highlight'); void el.offsetWidth; el.classList.add('highlight'); } }
   }
 
   // ---------------------------------------------------------------- drawer
@@ -630,12 +692,13 @@
         ['Interpretação', callLabel(c)],
         ['Tipo (ZGROUPEVENTTYPE)', `${CALL_KIND_PT[c.kind] ? 'chamada de ' + CALL_KIND_PT[c.kind] : 'subtipo não documentado'} (código ${c.kind_code})`],
         ['Resultado', 'não atendida — só chamadas perdidas geram registro em ZWAMESSAGE', 'wrap'],
+        ['CallHistory.sqlite', c.history ? h('button', { class: 'small-btn', onclick: (e) => { e.stopPropagation(); showCallDetails(c.history); } }, `ver registro completo (${callLabel(c.history)}${c.history.duration ? ', ' + fmtDuration(c.history.duration) : ''})`) : null],
         ['Direção', c.direction === 'outgoing' ? 'efetuada pelo titular' : 'recebida pelo titular'],
         ['Interlocutor', c.peer_name + (c.group_call ? ' (chamada em grupo)' : '')],
         ['JID interlocutor', c.peer_jid, 'mono'],
         ['JID titular', c.owner_jid, 'mono'],
         ['ID da chamada (ZSTANZAID)', c.call_id, 'mono'],
-        ['Duração', 'não disponível — CallHistory.sqlite não consta no export', 'muted'],
+        ['Duração', c.history ? null : (state.summary && state.summary.call_history_rows ? 'sem registro correspondente no CallHistory.sqlite' : 'não disponível — CallHistory.sqlite não consta no export'), 'muted'],
       ])));
     }
     if (msg.system) {
@@ -726,7 +789,7 @@
         ['Total no banco', msgs.length.toLocaleString('pt-BR')],
         ['Enviadas / recebidas', `${counts.out} / ${counts.in}`],
         ['Com mídia', String(counts.media)],
-        ['Chamadas perdidas', chat.call_count ? String(chat.call_count) : 'nenhuma registrada'],
+        ['Chamadas registradas', chat.call_count ? String(chat.call_count) : 'nenhuma'],
         ['Criptografia E2E ativada', chat.e2e_notice_at ? fmtFull.format(toDate(chat.e2e_notice_at)) : 'sem aviso registrado'],
         ['Primeira', first ? fmtFull.format(toDate(first.timestamp)) + (first.timestamp.approx ? ' (aprox.)' : '') : null],
         ['Última', last ? fmtFull.format(toDate(last.timestamp)) + (last.timestamp.approx ? ' (aprox.)' : '') : null],
@@ -767,7 +830,9 @@
         ['Conversas', String(s.chats)], ['Grupos', String(s.groups)], ['Mensagens', s.messages.toLocaleString('pt-BR')],
         ['Mídias vinculadas', `${s.media_linked} itens de mídia vinculados a ${integ.media_files ?? '—'} arquivos do export`],
         ['Contatos (agenda)', String(s.contacts)],
-        ['Chamadas perdidas (ZWAMESSAGE tipo 10/1)', String(s.calls)],
+        ['Chamadas (total)', String(s.calls)],
+        ['— avisos de perdida nas conversas (tipo 10/1)', String(s.calls_from_chat)],
+        ['— registros do CallHistory.sqlite', s.call_history_rows ? `${s.calls_from_history} (${s.call_history_rows} linhas, duplicatas das conversas unificadas)` : 'banco ausente no export'],
         ['Avisos de criptografia (tipo 10/2)', String(s.e2e_notices)],
         ['Avisos tipo 10 não interpretados', s.system_unknown ? String(s.system_unknown) : null],
         ['JID do titular (inferido)', s.owner_jid, 'mono'],
@@ -775,8 +840,15 @@
         ['Fuso horário de exibição', TZ],
       ])),
       section('Integridade (SHA-256)', kv([
-        ...fileRows('ZIP', integ.source_zip), ...fileRows('ChatStorage', integ.chat_db), ...fileRows('Contacts', integ.contacts_db),
+        ...fileRows('ZIP', integ.source_zip), ...fileRows('ChatStorage', integ.chat_db), ...fileRows('Contacts', integ.contacts_db), ...fileRows('CallHistory', integ.calls_db),
       ])),
+      section('Exibição', h('label', { class: 'toggle-row' },
+        h('input', { type: 'checkbox', checked: state.showNotices ? '' : null, onchange: (e) => {
+          state.showNotices = e.target.checked;
+          if (state.currentChat && state.messages.length) renderMessages(state.messages);
+        } }),
+        h('span', null, 'Mostrar avisos de criptografia de ponta a ponta na conversa',
+          h('small', null, `${s.e2e_notices} aviso${s.e2e_notices === 1 ? '' : 's'} ocultos por padrão; a data de cada um continua nos dados do contato/grupo.`)))),
       section('Notas', h('div', { style: 'font-size:13px;color:#54656f;line-height:19px' },
         'Timestamps marcados com "~" ou "(aprox.)" foram truncados no export para 5 dígitos; o valor exibido é o início de uma janela de ~2h47min. ',
         'JIDs com sufixo "~N" são artefato de anonimização e foram normalizados para correlação. ',
@@ -795,7 +867,7 @@
       const q = input.value.trim().toLowerCase();
       results.textContent = '';
       if (!q) { results.appendChild(h('div', { class: 'search-hint' }, 'Digite para pesquisar')); return; }
-      const hits = state.messages.filter((m) => msgLabel(m).toLowerCase().includes(q) || (m.sender.name && m.sender.name.toLowerCase().includes(q)) || (m.stanza_id && m.stanza_id.toLowerCase() === q) || String(m.id) === q);
+      const hits = state.messages.filter((m) => !isHidden(m) && (msgLabel(m).toLowerCase().includes(q) || (m.sender.name && m.sender.name.toLowerCase().includes(q)) || (m.stanza_id && m.stanza_id.toLowerCase() === q) || String(m.id) === q));
       if (!hits.length) { results.appendChild(h('div', { class: 'search-hint' }, 'Nenhuma mensagem encontrada')); return; }
       const frag = document.createDocumentFragment();
       for (const m of hits.slice(0, 300)) {

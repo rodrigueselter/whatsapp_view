@@ -6,6 +6,7 @@ from pathlib import Path
 
 CHAT_DB_HINTS = ("chatstorage",)
 CONTACTS_DB_HINTS = ("contacts",)
+CALLS_DB_HINTS = ("callhistory",)
 
 MAGIC = (
     (b"OggS", "audio/ogg"),
@@ -64,6 +65,7 @@ class Extraction:
         self.extra_media = [Path(d) for d in extra_media]
         self.chat_db = None
         self.contacts_db = None
+        self.calls_db = None
         self.media_by_name = {}
         self.integrity = {}
         self._scan()
@@ -79,6 +81,9 @@ class Extraction:
                     continue
                 if any(h in lower for h in CONTACTS_DB_HINTS) and self.contacts_db is None:
                     self.contacts_db = path
+                    continue
+                if any(h in lower for h in CALLS_DB_HINTS) and self.calls_db is None:
+                    self.calls_db = path
                     continue
             if lower.endswith(("-wal", "-shm", ".plist")):
                 continue
@@ -99,6 +104,7 @@ class Extraction:
             "source_zip": self._file_info(self.source_zip) if self.source_zip else None,
             "chat_db": self._file_info(self.chat_db),
             "contacts_db": self._file_info(self.contacts_db) if self.contacts_db else None,
+            "calls_db": self._file_info(self.calls_db) if self.calls_db else None,
             "media_files": len(self.media_by_name),
             "extra_media_dirs": [str(d) for d in self.extra_media],
         }

@@ -7,6 +7,7 @@ import re
 import sqlite3
 from collections import defaultdict
 
+from .calls import load_call_history
 from .dates import timestamp
 from .extractor import sha256_file, sniff_mime
 from .receipts import parse_receipts
@@ -24,6 +25,8 @@ MESSAGE_TYPES = {
 #        ponta" (exatamente um por conversa; rajada em 05-07/04/2016, data do
 #        lançamento do E2E, e, nas conversas posteriores, na 1ª mensagem).
 SYSTEM_SUBTYPES = {1: "call", 2: "e2e_notice"}
+# Avisos sem conteúdo de conversa: ocultos no fluxo de mensagens por padrão.
+HIDDEN_NOTICE_TYPES = {"e2e_notice", "system"}
 CALL_KINDS = {1: "voice"}
 # ZWAMESSAGE.ZMESSAGESTATUS (relevante para mensagens enviadas)
 STATUS_LABELS = {
@@ -119,6 +122,8 @@ class ChatStore:
         self.push_names = {}
         self.owner_jid = None
         self.calls = []
+        self.call_history_count = 0
+        self._call_messages = {}
         self._media_cache = {}
         self._load()
 
@@ -133,6 +138,7 @@ class ChatStore:
             self._load_messages(conn, members)
         finally:
             conn.close()
+        self._load_call_history()
 
     def _infer_owner(self, conn):
         """JID do titular: destinatário (ZTOJID) mais frequente das mensagens recebidas."""
@@ -299,6 +305,7 @@ class ChatStore:
             elif mtype == "call":
                 msg["call"] = self._call_event(r, chat, from_me)
                 self.calls.append(self._call_entry(msg, chat))
+                self._call_messages[msg["id"]] = msg
             elif r["ZMESSAGETYPE"] == 10:
                 msg["system"] = self._system_notice(r, chat)
             self.messages_by_chat[chat["id"]].append(msg)
@@ -306,7 +313,9 @@ class ChatStore:
         for chat in self.chats:
             msgs = self.messages_by_chat.get(chat["id"], [])
             chat["message_count"] = len(msgs)
-            chat["last_message"] = self._preview(msgs[-1]) if msgs else None
+            # Avisos do aplicativo (criptografia etc.) não aparecem como prévia.
+            visible = [m for m in msgs if m["type"] not in HIDDEN_NOTICE_TYPES]
+            chat["last_message"] = self._preview(visible[-1]) if visible else None
             chat["call_count"] = sum(1 for m in msgs if m["type"] == "call")
             e2e = next((m for m in msgs if m["type"] == "e2e_notice"), None)
             chat["e2e_notice_at"] = e2e["timestamp"] if e2e else None
@@ -386,6 +395,8 @@ class ChatStore:
     def _call_entry(self, msg, chat):
         call = msg["call"]
         return {
+            "source": "chat",
+            "id": None,
             "message_id": msg["id"],
             "chat_id": chat["id"],
             "chat_name": chat["name"],
@@ -400,7 +411,96 @@ class ChatStore:
             "peer_jid_normalized": call["peer_jid_normalized"],
             "peer_name": call["peer_name"],
             "contact": self.contacts.lookup(call["peer_jid"]) if call["peer_jid"] else None,
+            "duration": None,
+            "end_timestamp": None,
+            "participants": [],
         }
+
+    def _load_call_history(self):
+        """Incorpora CallHistory.sqlite (chamadas atendidas, efetuadas, perdidas, duração)."""
+        path = self.extraction.calls_db
+        if not path:
+            return
+        raw_calls = load_call_history(path)
+        self.call_history_count = len(raw_calls)
+        chats_by_jid = {c["jid_normalized"]: c for c in self.chats if c["jid_normalized"]}
+        chat_entries_by_call_id = {c["call_id"]: c for c in self.calls if c["call_id"]}
+        for raw in raw_calls:
+            for p in raw["participants"]:
+                p["jid_normalized"] = normalize_jid(p["jid"])
+                p["is_me"] = bool(self.owner_jid) and p["jid_normalized"] == self.owner_jid
+                p["name"] = "Você" if p["is_me"] else self._display_name(p["jid"])
+                p["contact"] = None if p["is_me"] else self.contacts.lookup(p["jid"])
+            others = [p for p in raw["participants"] if not p["is_me"]]
+            creator = raw["creator_jid"]
+            creator_is_me = bool(creator) and normalize_jid(creator) == self.owner_jid
+            if raw["group_jid"]:
+                peer_jid = raw["group_jid"]
+            elif others:
+                peer_jid = others[0]["jid"]
+            elif creator and not creator_is_me:
+                peer_jid = creator
+            else:
+                peer_jid = None
+            chat = chats_by_jid.get(normalize_jid(peer_jid)) if peer_jid else None
+            if raw["incoming_raw"] is not None:
+                direction = "incoming" if raw["incoming_raw"] else "outgoing"
+            elif creator:
+                direction = "outgoing" if creator_is_me else "incoming"
+            else:
+                direction = "unknown"
+            if chat:
+                peer_name = chat["name"]
+            elif peer_jid:
+                peer_name = self._display_name(peer_jid)
+            else:
+                peer_name = "Interlocutor não registrado"
+            entry = {
+                "source": "call_history",
+                "id": raw["id"],
+                "message_id": None,
+                "chat_id": chat["id"] if chat else None,
+                "chat_name": chat["name"] if chat else peer_name,
+                "chat_type": "group" if raw["group_jid"] else "individual",
+                "timestamp": raw["timestamp"],
+                "end_timestamp": raw["end_timestamp"],
+                "duration": raw["duration"],
+                "kind": raw["kind"],
+                "kind_code": raw["video_raw"],
+                "outcome": raw["outcome"] or "unknown",
+                "outcome_code": raw["outcome_code"],
+                "direction": direction,
+                "incoming_raw": raw["incoming_raw"],
+                "missed_raw": raw["missed_raw"],
+                "missed_reason": raw["missed_reason"],
+                "call_id": raw["call_id"],
+                "peer_jid": peer_jid,
+                "peer_jid_normalized": normalize_jid(peer_jid),
+                "peer_name": peer_name,
+                "contact": self.contacts.lookup(peer_jid) if peer_jid and not raw["group_jid"] else None,
+                "creator_jid": creator,
+                "group_jid": raw["group_jid"],
+                "bytes_sent": raw["bytes_sent"],
+                "bytes_received": raw["bytes_received"],
+                "aggregate_id": raw["aggregate_id"],
+                "participants": raw["participants"],
+            }
+            # Mesma chamada registrada também como aviso de perdida na conversa:
+            # o histórico prevalece (mais completo) e aponta para a mensagem.
+            linked = chat_entries_by_call_id.get(raw["call_id"]) if raw["call_id"] else None
+            if linked:
+                entry["message_id"] = linked["message_id"]
+                if entry["chat_id"] is None:
+                    entry["chat_id"] = linked["chat_id"]
+                    entry["chat_name"] = linked["chat_name"]
+                self.calls.remove(linked)
+                msg = self._call_messages.get(linked["message_id"])
+                if msg:
+                    msg["call"]["history"] = entry
+            self.calls.append(entry)
+        for chat in self.chats:
+            chat["call_count"] = sum(1 for c in self.calls if c["chat_id"] == chat["id"])
+        self.calls.sort(key=lambda c: -(c["timestamp"]["unix"] if c["timestamp"] else 0))
 
     def _system_notice(self, row, chat):
         code = row["ZGROUPEVENTTYPE"]
@@ -504,6 +604,9 @@ class ChatStore:
             "media_linked": len(self._media_cache),
             "contacts": len(self.contacts.by_wa_id),
             "calls": len(self.calls),
+            "calls_from_chat": sum(1 for c in self.calls if c["source"] == "chat"),
+            "calls_from_history": sum(1 for c in self.calls if c["source"] == "call_history"),
+            "call_history_rows": self.call_history_count,
             "e2e_notices": sum(
                 1 for msgs in self.messages_by_chat.values() for m in msgs if m["type"] == "e2e_notice"
             ),
