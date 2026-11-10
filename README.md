@@ -213,3 +213,7 @@ wa_view/
   server.py     servidor HTTP (stdlib) — API JSON (/api/chats, /api/calls, /api/media-items, ...), mídias com Range, estáticos
   static/       index.html, style.css, app.js, media.js, icons.js (frontend sem dependências)
 ```
+
+## Colaboradores
+- Elter Rodrigues
+- Gabriel Duarte
