@@ -21,24 +21,18 @@
 .PARAMETER Media
     Pastas extras de mídia (equivale a --media; várias: -Media A,B).
 
-.PARAMETER AskKey
-    Pergunta a chave de API do OpenCode (digitação oculta) e a passa só ao
-    servidor desta execução. Nada é gravado em disco. Alternativa: definir a
-    variável de ambiente OPENCODE_API_KEY, ou informar a chave no painel de IA.
-
 .PARAMETER NoBrowser
     Não abre o navegador automaticamente.
 
 .EXAMPLE
     .\iniciar.ps1
-    .\iniciar.ps1 -Port 8080 -AskKey
+    .\iniciar.ps1 -Port 8080
     .\iniciar.ps1 -Media "D:\casos\Media" -NoBrowser
 #>
 [CmdletBinding()]
 param(
     [int]$Port = 8000,
     [string[]]$Media,
-    [switch]$AskKey,
     [switch]$NoBrowser
 )
 
@@ -90,17 +84,6 @@ if (-not $py) {
     Write-Fail "Python 3.9+ não encontrado. Instale em https://www.python.org/downloads/ marcando 'Add python.exe to PATH'."
 }
 Write-Step "Python $($py.Version) ($($py.Exe))"
-
-# ---------------------------------------------------------------- chave OpenCode
-if ($AskKey) {
-    $secure = Read-Host "Chave de API do OpenCode (não é exibida nem gravada)" -AsSecureString
-    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
-    try { $plain = [Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr) }
-    finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
-    if ($plain) { $env:OPENCODE_API_KEY = $plain; Write-Step "Chave recebida (somente nesta execução)." }
-}
-if ($env:OPENCODE_API_KEY) { Write-Step "Análise por IA: chave do OpenCode disponível." }
-else { Write-Step "Análise por IA: sem chave (informe-a no painel de IA da interface, se for usar)." }
 
 # ---------------------------------------------------------------- porta
 function Test-PortFree([int]$p) {

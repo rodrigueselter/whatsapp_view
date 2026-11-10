@@ -8,7 +8,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from . import ai as ai_module
 from .upload import UploadError
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -16,8 +15,6 @@ _RANGE = re.compile(r"bytes=(\d*)-(\d*)")
 
 
 def make_handler(state):
-    ai = ai_module.AIService()
-
     class Handler(BaseHTTPRequestHandler):
         server_version = "wa_view/0.1"
         protocol_version = "HTTP/1.1"
@@ -97,62 +94,8 @@ def make_handler(state):
             except (BrokenPipeError, ConnectionResetError):
                 pass
 
-        # ------------------------------------------------------------- IA
-        def _read_json(self):
-            """Corpo JSON pequeno; exige Content-Type JSON e mesma origem (barra requisições de outros sites)."""
-            origin = self.headers.get("Origin")
-            if origin and urlparse(origin).netloc != self.headers.get("Host"):
-                raise ai_module.AIError(403, "forbidden_origin", "Origem não permitida.")
-            if "application/json" not in (self.headers.get("Content-Type") or ""):
-                raise ai_module.AIError(415, "bad_type", "Content-Type deve ser application/json.")
-            try:
-                length = int(self.headers.get("Content-Length") or 0)
-            except ValueError:
-                length = -1
-            if length < 0 or length > 65536:
-                raise ai_module.AIError(413, "too_large", "Corpo da requisição inválido ou grande demais.")
-            try:
-                data = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
-            except ValueError:
-                raise ai_module.AIError(400, "bad_json", "JSON inválido.") from None
-            return data if isinstance(data, dict) else {}
-
-        def _is_loopback(self):
-            return self.client_address[0] in ("127.0.0.1", "::1", "::ffff:127.0.0.1")
-
-        def _ai_post(self, path):
-            try:
-                body = self._read_json()
-                store = state.store
-                if store is None:
-                    raise ai_module.AIError(409, "no_export", "Nenhum export carregado.")
-                if path == "/api/ai/key":
-                    if not self._is_loopback():
-                        raise ai_module.AIError(403, "remote_key", "A chave só pode ser informada por acesso local (127.0.0.1).")
-                    ai.set_key(body.get("key"))
-                    return self._send_json(ai.status(store))
-                if path == "/api/ai/test":
-                    return self._send_json(ai.test(str(body.get("model") or ai_module.DEFAULT_MODEL)))
-                if path == "/api/ai/analyze":
-                    if body.get("confirm") is not True:
-                        raise ai_module.AIError(400, "no_consent", "É necessário confirmar o envio dos dados ao serviço de IA.")
-                    chat_id = body.get("chat_id")
-                    if body.get("scope") == "chat" and not isinstance(chat_id, int):
-                        raise ai_module.AIError(400, "bad_chat", "chat_id inválido.")
-                    job = ai.start(store, str(body.get("scope")), chat_id, str(body.get("model")),
-                                   {"include_chat_results": body.get("include_chat_results") is not False})
-                    return self._send_json(job, HTTPStatus.ACCEPTED)
-                m = re.fullmatch(r"/api/ai/jobs/([0-9a-f]{12})/cancel", path)
-                if m:
-                    return self._send_json(ai.cancel(m.group(1)))
-                return self._not_found()
-            except ai_module.AIError as exc:
-                return self._send_json({"error": exc.code, "message": exc.message}, exc.status)
-
         def do_POST(self):
             path = urlparse(self.path).path
-            if path.startswith("/api/ai/"):
-                return self._ai_post(path)
             if path != "/api/upload":
                 self.close_connection = True
                 return self._not_found()
@@ -193,20 +136,6 @@ def make_handler(state):
             if store is None and (path.startswith("/api/") or path.startswith("/media/")):
                 return self._send_json({"error": "no_export", "message": "Nenhum export carregado."},
                                        HTTPStatus.CONFLICT)
-            if path == "/api/ai/status":
-                return self._send_json(ai.status(store))
-            if path == "/api/ai/estimate":
-                chat_id = self._int_param("chat")
-                if chat_id is None or store.chat(chat_id) is None:
-                    return self._not_found()
-                return self._send_json(ai_module.estimate_chat(store, chat_id))
-            if path == "/api/ai/results":
-                chat_id = self._int_param("chat")
-                return self._send_json(ai.list_results(store, f"chat:{chat_id}" if chat_id is not None else "general"))
-            m = re.fullmatch(r"/api/ai/jobs/([0-9a-f]{12})", path)
-            if m:
-                job = ai.get_job(m.group(1))
-                return self._send_json(job) if job else self._not_found()
             if path == "/api/summary":
                 return self._send_json(store.summary() | {"upload": state.upload_info})
             if path == "/api/media-items":
