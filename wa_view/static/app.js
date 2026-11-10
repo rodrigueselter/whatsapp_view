@@ -12,20 +12,28 @@
     messageIndex: new Map(),
     drawer: null,           // 'message' | 'chat' | 'search' | 'case'
     summary: null,
+    sidebar: 'chats',       // 'chats' | 'calls'
+    calls: null,            // histórico de chamadas (/api/calls), carregado sob demanda
   };
   const SENDER_COLORS = ['#1f7aec', '#fe6a5e', '#ef697a', '#dd6f5a', '#02a698', '#2f88c7',
     '#6bcbef', '#35cd96', '#f3b53e', '#a364f5', '#e542a3', '#91ab01', '#d26523', '#5d86e0'];
   const MEDIA_LABEL = {
     image: 'Foto', video: 'Vídeo', audio: 'Áudio', contact: 'Contato', location: 'Localização',
-    document: 'Documento', gif: 'GIF', sticker: 'Figurinha', call: 'Chamada', deleted: 'Mensagem apagada',
+    document: 'Documento', gif: 'GIF', sticker: 'Figurinha', call: 'Chamada perdida', deleted: 'Mensagem apagada',
+    e2e_notice: 'Criptografia de ponta a ponta ativada', system: 'Aviso do sistema',
   };
   const MEDIA_ICON = { image: 'camera', video: 'video', audio: 'micSmall', contact: 'contactCard',
-    location: 'location', document: 'doc', gif: 'video', sticker: 'camera', call: 'call', deleted: 'blocked' };
+    location: 'location', document: 'doc', gif: 'video', sticker: 'camera', call: 'callMissed', deleted: 'blocked',
+    e2e_notice: 'lock', system: 'lock' };
+  const CALL_KIND_PT = { voice: 'voz', video: 'vídeo' };
+  const E2E_TEXT = 'As mensagens enviadas para esta conversa e as chamadas agora são protegidas com a criptografia de ponta a ponta.';
+  const SYSTEM_TYPES = new Set(['group_event', 'e2e_notice', 'system']);
   const STATUS_PT = { received: 'Recebida', pending: 'Pendente', sent: 'Enviada', failed: 'Falha no envio',
     played: 'Reproduzida', delivered: 'Entregue', read: 'Lida' };
   const TYPE_PT = { text: 'Texto', image: 'Imagem', video: 'Vídeo', audio: 'Áudio', contact: 'Contato (vCard)',
     location: 'Localização', group_event: 'Evento de grupo', link: 'Link', document: 'Documento',
-    call: 'Chamada', gif: 'GIF', deleted: 'Apagada', sticker: 'Figurinha' };
+    call: 'Registro de chamada', gif: 'GIF', deleted: 'Apagada', sticker: 'Figurinha',
+    e2e_notice: 'Aviso de criptografia (E2E)', system: 'Aviso do sistema (não interpretado)' };
   const EVENT_PT = {
     created: (e) => ['criou o grupo ', q(e.subject)],
     member_added: (e) => ['adicionou ', b(e.target || 'participante')],
@@ -147,6 +155,16 @@
     const builder = EVENT_PT[ev.kind] || (() => [`evento de grupo (tipo ${ev.code})`]);
     return [ev.actor ? b(ev.actor) : 'Sistema', ' ', ...builder(ev)];
   }
+  function callLabel(call) {
+    if (!call) return 'Chamada perdida';
+    const kind = CALL_KIND_PT[call.kind];
+    const base = kind ? `Chamada de ${kind} perdida` : `Chamada perdida (subtipo ${call.kind_code})`;
+    return call.direction === 'outgoing' ? base.replace('perdida', 'não atendida') : base;
+  }
+  function msgLabel(m) {
+    if (m.type === 'call') return callLabel(m.call || { kind: m.call_kind, kind_code: '?' });
+    return m.text || MEDIA_LABEL[m.type] || TYPE_PT[m.type] || '';
+  }
 
   // ----------------------------------------------------------- chat list
   async function loadChats() {
@@ -166,7 +184,7 @@
     p.textContent = '';
     p.appendChild(h('div', { class: 'intro-stats' },
       stat(s.chats, 'conversas'), stat(s.groups, 'grupos'), stat(s.messages, 'mensagens'),
-      stat(s.media_linked, 'mídias'), stat(s.contacts, 'contatos')));
+      stat(s.media_linked, 'mídias'), stat(s.contacts, 'contatos'), stat(s.calls, 'chamadas perdidas')));
     function stat(v, l) { return h('div', { class: 'intro-stat' }, b(v.toLocaleString('pt-BR')), h('span', null, l)); }
   }
 
@@ -198,9 +216,9 @@
     const preview = h('div', { class: 'chat-row-preview' });
     if (lm) {
       if (lm.from_me) preview.appendChild(ticks({ from_me: true, status: lm.status }));
-      else if (chat.type === 'group' && lm.type !== 'group_event' && lm.type !== 'call') preview.appendChild(h('span', { class: 'preview-text' }, lm.sender_name + ': '));
-      if (MEDIA_ICON[lm.type]) preview.appendChild(icon(MEDIA_ICON[lm.type], 'media-icon'));
-      const text = lm.type === 'group_event' ? 'Evento de grupo' : (lm.text || MEDIA_LABEL[lm.type] || '');
+      else if (chat.type === 'group' && !SYSTEM_TYPES.has(lm.type) && lm.type !== 'call') preview.appendChild(h('span', { class: 'preview-text' }, lm.sender_name + ': '));
+      if (MEDIA_ICON[lm.type]) preview.appendChild(icon(MEDIA_ICON[lm.type], 'media-icon' + (lm.type === 'call' ? ' missed' : '')));
+      const text = lm.type === 'group_event' ? 'Evento de grupo' : msgLabel(lm);
       preview.appendChild(h('span', { class: 'preview-text' }, text));
     } else {
       preview.appendChild(h('span', { class: 'preview-text' }, chat.last_message_text || 'Sem mensagens'));
@@ -223,7 +241,7 @@
   }
 
   // ------------------------------------------------------------ conversa
-  async function openChat(id) {
+  async function openChat(id, focusMessageId) {
     const chat = state.chats.find((c) => c.id === id);
     if (!chat) return;
     state.currentChat = chat;
@@ -248,6 +266,11 @@
       state.messageIndex = new Map(messages.map((m) => [m.id, m]));
       renderChatHeader(chat, full);
       renderMessages(messages);
+      if (focusMessageId) {
+        scrollToMessage(focusMessageId);
+        const target = state.messageIndex.get(focusMessageId);
+        if (target) showMessageDetails(target);
+      }
     } catch (err) {
       box.textContent = '';
       box.appendChild(h('div', { class: 'messages-loading' }, 'Erro ao carregar mensagens: ' + err.message));
@@ -286,6 +309,13 @@
       if (msg.type === 'group_event') {
         frag.appendChild(h('div', { class: 'system-msg', dataset: { id: msg.id }, onclick: () => showMessageDetails(msg) },
           h('span', null, ...eventText(msg.group_event))));
+        lastSenderKey = null; lastWasSystem = true;
+        continue;
+      }
+      if (msg.type === 'e2e_notice' || msg.type === 'system') {
+        const text = msg.type === 'e2e_notice' ? E2E_TEXT : `Aviso do sistema não interpretado (tipo ${msg.type_code}, subtipo ${msg.system ? msg.system.code : '?'}).`;
+        frag.appendChild(h('div', { class: 'system-msg e2e', dataset: { id: msg.id }, onclick: () => showMessageDetails(msg) },
+          h('span', null, icon('lock', 'lock-ico'), text)));
         lastSenderKey = null; lastWasSystem = true;
         continue;
       }
@@ -360,12 +390,24 @@
       case 'location':
         return locationEl(msg);
       case 'call':
-        return h('div', { class: 'call-msg' }, icon('call', 'call-icon'), h('span', null, 'Chamada', h('div', { class: 'card-sub' }, 'registro de chamada no histórico')));
+        return callCard(msg);
       case 'deleted':
         return h('div', { class: 'msg-text deleted' }, icon('blocked'), msg.from_me ? 'Você apagou esta mensagem' : 'Esta mensagem foi apagada');
       default:
         return h('div', { class: 'msg-text' }, msg.text || `[${msg.type}]`);
     }
+  }
+
+  function callCard(msg) {
+    const call = msg.call || {};
+    const when = msg.timestamp ? `às ${fmtTime.format(toDate(msg.timestamp))}` : '';
+    const who = state.currentChat.type === 'group' && call.peer_name ? ` · ${call.peer_name}` : '';
+    const sub = `${when}${who}` || 'horário não registrado';
+    return h('div', { class: 'call-card' },
+      h('div', { class: 'call-ico' }, icon(call.kind === 'video' ? 'video' : 'callMissed')),
+      h('div', { class: 'call-body' },
+        h('div', { class: 'call-title' }, callLabel(call)),
+        h('div', { class: 'call-sub' }, icon(call.direction === 'outgoing' ? 'callOut' : 'callIn', 'call-arrow missed'), sub)));
   }
 
   function mediaMissing(msg) {
@@ -446,6 +488,80 @@
         lat !== null && lat !== undefined ? h('a', { href: `https://www.openstreetmap.org/?mlat=${lat}&mlon=${lon}#map=16/${lat}/${lon}`, target: '_blank', rel: 'noopener noreferrer', style: 'font-size:12px' }, 'abrir no OpenStreetMap') : null));
   }
 
+  // ------------------------------------------------------------- chamadas
+  async function showCalls() {
+    state.sidebar = 'calls';
+    $('btn-calls').classList.add('active');
+    $('chat-list').hidden = true;
+    const panel = $('calls-panel');
+    panel.hidden = false;
+    $('chat-search').placeholder = 'Pesquisar chamadas';
+    if (!state.calls) {
+      panel.textContent = '';
+      panel.appendChild(h('div', { class: 'chat-list-empty' }, 'Carregando chamadas…'));
+      state.calls = await fetch('/api/calls').then((r) => r.json());
+    }
+    renderCalls();
+  }
+  function hideCalls() {
+    state.sidebar = 'chats';
+    $('btn-calls').classList.remove('active');
+    $('calls-panel').hidden = true;
+    $('chat-list').hidden = false;
+    $('chat-search').placeholder = 'Pesquisar ou começar uma nova conversa';
+    renderChatList();
+  }
+  function filteredCalls() {
+    const q = state.query.trim().toLowerCase();
+    return (state.calls || []).filter((c) => !q || [c.peer_name, c.chat_name, c.peer_jid_normalized, c.call_id, c.contact && c.contact.phone]
+      .some((v) => v && String(v).toLowerCase().includes(q)));
+  }
+  function renderCalls() {
+    const panel = $('calls-panel');
+    panel.textContent = '';
+    const calls = filteredCalls();
+    const all = state.calls || [];
+    const byPeer = new Map();
+    for (const c of all) {
+      const key = c.peer_jid_normalized || c.chat_name;
+      const e = byPeer.get(key) || { name: c.peer_name, n: 0, last: null };
+      e.n++; if (!e.last || (c.timestamp && c.timestamp.unix > e.last.unix)) e.last = c.timestamp;
+      byPeer.set(key, e);
+    }
+    panel.appendChild(h('div', { class: 'calls-head' },
+      h('div', { class: 'calls-title' }, 'Chamadas'),
+      h('div', { class: 'calls-sub' }, all.length
+        ? `${all.length} registro${all.length > 1 ? 's' : ''} de chamada perdida em ${byPeer.size} contato${byPeer.size > 1 ? 's' : ''} · atendidas não constam (CallHistory.sqlite ausente)`
+        : 'Nenhum registro de chamada neste export')));
+    if (!calls.length) {
+      panel.appendChild(h('div', { class: 'chat-list-empty' }, all.length ? 'Nenhuma chamada corresponde à busca' : 'Sem chamadas'));
+      return;
+    }
+    if (!state.query.trim() && byPeer.size > 1) {
+      const rank = [...byPeer.values()].sort((a, b) => b.n - a.n).slice(0, 5);
+      panel.appendChild(h('div', { class: 'calls-rank' }, h('div', { class: 'calls-rank-title' }, 'Mais frequentes'),
+        ...rank.map((r) => h('div', { class: 'calls-rank-row' }, h('span', { class: 'rank-name' }, r.name), h('span', { class: 'rank-n' }, `${r.n} chamada${r.n > 1 ? 's' : ''}`)))));
+    }
+    const frag = document.createDocumentFragment();
+    let lastDay = null;
+    for (const c of calls) {
+      const d = toDate(c.timestamp);
+      const key = dayKey(d);
+      if (key !== lastDay) { frag.appendChild(h('div', { class: 'calls-day' }, dayLabel(d))); lastDay = key; }
+      frag.appendChild(h('div', { class: 'chat-item call-item', role: 'listitem', onclick: () => openChat(c.chat_id, c.message_id) },
+        avatar(c.chat_type === 'group' ? 'group' : 'user', 49),
+        h('div', { class: 'chat-item-body' },
+          h('div', { class: 'chat-row' },
+            h('div', { class: 'chat-row-title missed' }, c.peer_name + (c.chat_type === 'group' ? ` · ${c.chat_name}` : '')),
+            h('div', { class: 'chat-row-time' }, d ? fmtTime.format(d) : '')),
+          h('div', { class: 'chat-row' },
+            h('div', { class: 'chat-row-preview' }, icon(c.direction === 'outgoing' ? 'callOut' : 'callIn', 'call-arrow missed'),
+              h('span', { class: 'preview-text' }, `${callLabel(c)}${c.contact && c.contact.phone ? ' · ' + c.contact.phone : (c.peer_jid_normalized ? ' · +' + c.peer_jid_normalized.split('@')[0] : '')}`)),
+            h('div', { class: 'badges' }, icon(c.kind === 'video' ? 'video' : 'call', 'media-icon'))))));
+    }
+    panel.appendChild(frag);
+  }
+
   // ---------------------------------------------------------------- drawer
   function openDrawer(kind, title, body) {
     state.drawer = kind;
@@ -508,6 +624,30 @@
       section('Mensagem', kv(rows)),
       msg.text ? section('Conteúdo', h('div', { class: 'msg-text', style: 'font-size:13px' }, msg.text)) : null,
     ];
+    if (msg.call) {
+      const c = msg.call;
+      parts.push(section('Chamada', kv([
+        ['Interpretação', callLabel(c)],
+        ['Tipo (ZGROUPEVENTTYPE)', `${CALL_KIND_PT[c.kind] ? 'chamada de ' + CALL_KIND_PT[c.kind] : 'subtipo não documentado'} (código ${c.kind_code})`],
+        ['Resultado', 'não atendida — só chamadas perdidas geram registro em ZWAMESSAGE', 'wrap'],
+        ['Direção', c.direction === 'outgoing' ? 'efetuada pelo titular' : 'recebida pelo titular'],
+        ['Interlocutor', c.peer_name + (c.group_call ? ' (chamada em grupo)' : '')],
+        ['JID interlocutor', c.peer_jid, 'mono'],
+        ['JID titular', c.owner_jid, 'mono'],
+        ['ID da chamada (ZSTANZAID)', c.call_id, 'mono'],
+        ['Duração', 'não disponível — CallHistory.sqlite não consta no export', 'muted'],
+      ])));
+    }
+    if (msg.system) {
+      const sy = msg.system;
+      parts.push(section(msg.type === 'e2e_notice' ? 'Aviso de criptografia' : 'Aviso do sistema', kv([
+        ['Interpretação', msg.type === 'e2e_notice' ? 'ativação da criptografia de ponta a ponta nesta conversa (um aviso por conversa)' : 'não interpretado', 'wrap'],
+        ['Códigos', `ZMESSAGETYPE ${sy.type_code} / ZGROUPEVENTTYPE ${sy.code}`, 'mono'],
+        ['JID origem', sy.from_jid, 'mono'], ['JID destino', sy.to_jid, 'mono'],
+        ['Stanza ID', sy.stanza_id, 'mono'],
+        ['Observação', 'Registro gerado pelo aplicativo, sem autor humano. Horário com precisão total (não truncado).', 'muted'],
+      ])));
+    }
     if (msg.group_event) {
       const ev = msg.group_event;
       parts.push(section('Evento de grupo', kv([
@@ -567,7 +707,7 @@
     const msgs = state.messages;
     const first = msgs.find((m) => m.timestamp), last = [...msgs].reverse().find((m) => m.timestamp);
     const counts = { out: 0, in: 0, media: 0 };
-    for (const m of msgs) { if (m.from_me) counts.out++; else if (m.type !== 'group_event') counts.in++; if (m.media) counts.media++; }
+    for (const m of msgs) { if (m.from_me) counts.out++; else if (!SYSTEM_TYPES.has(m.type) && m.type !== 'call') counts.in++; if (m.media) counts.media++; }
     const parts = [
       h('div', { class: 'drawer-section profile' }, avatar(chat, 200),
         h('div', { class: 'name' }, chat.name),
@@ -586,6 +726,8 @@
         ['Total no banco', msgs.length.toLocaleString('pt-BR')],
         ['Enviadas / recebidas', `${counts.out} / ${counts.in}`],
         ['Com mídia', String(counts.media)],
+        ['Chamadas perdidas', chat.call_count ? String(chat.call_count) : 'nenhuma registrada'],
+        ['Criptografia E2E ativada', chat.e2e_notice_at ? fmtFull.format(toDate(chat.e2e_notice_at)) : 'sem aviso registrado'],
         ['Primeira', first ? fmtFull.format(toDate(first.timestamp)) + (first.timestamp.approx ? ' (aprox.)' : '') : null],
         ['Última', last ? fmtFull.format(toDate(last.timestamp)) + (last.timestamp.approx ? ' (aprox.)' : '') : null],
       ])),
@@ -625,6 +767,10 @@
         ['Conversas', String(s.chats)], ['Grupos', String(s.groups)], ['Mensagens', s.messages.toLocaleString('pt-BR')],
         ['Mídias vinculadas', `${s.media_linked} itens de mídia vinculados a ${integ.media_files ?? '—'} arquivos do export`],
         ['Contatos (agenda)', String(s.contacts)],
+        ['Chamadas perdidas (ZWAMESSAGE tipo 10/1)', String(s.calls)],
+        ['Avisos de criptografia (tipo 10/2)', String(s.e2e_notices)],
+        ['Avisos tipo 10 não interpretados', s.system_unknown ? String(s.system_unknown) : null],
+        ['JID do titular (inferido)', s.owner_jid, 'mono'],
         ['Pastas de mídia extras', (integ.extra_media_dirs && integ.extra_media_dirs.length) ? integ.extra_media_dirs.join(' · ') : null, 'mono'],
         ['Fuso horário de exibição', TZ],
       ])),
@@ -634,7 +780,9 @@
       section('Notas', h('div', { style: 'font-size:13px;color:#54656f;line-height:19px' },
         'Timestamps marcados com "~" ou "(aprox.)" foram truncados no export para 5 dígitos; o valor exibido é o início de uma janela de ~2h47min. ',
         'JIDs com sufixo "~N" são artefato de anonimização e foram normalizados para correlação. ',
-        'Tipos MIME são detectados pelo conteúdo do arquivo, não pela extensão.')),
+        'Tipos MIME são detectados pelo conteúdo do arquivo, não pela extensão. ',
+        'Mensagens ZMESSAGETYPE = 10 são avisos do aplicativo: subtipo 1 = chamada de voz perdida; subtipo 2 = ativação da criptografia de ponta a ponta (não é chamada). ',
+        'O JID do titular é inferido como destinatário mais frequente das mensagens recebidas.')),
     ]);
   }
 
@@ -647,11 +795,11 @@
       const q = input.value.trim().toLowerCase();
       results.textContent = '';
       if (!q) { results.appendChild(h('div', { class: 'search-hint' }, 'Digite para pesquisar')); return; }
-      const hits = state.messages.filter((m) => (m.text && m.text.toLowerCase().includes(q)) || (m.sender.name && m.sender.name.toLowerCase().includes(q)) || (m.stanza_id && m.stanza_id.toLowerCase() === q) || String(m.id) === q);
+      const hits = state.messages.filter((m) => msgLabel(m).toLowerCase().includes(q) || (m.sender.name && m.sender.name.toLowerCase().includes(q)) || (m.stanza_id && m.stanza_id.toLowerCase() === q) || String(m.id) === q);
       if (!hits.length) { results.appendChild(h('div', { class: 'search-hint' }, 'Nenhuma mensagem encontrada')); return; }
       const frag = document.createDocumentFragment();
       for (const m of hits.slice(0, 300)) {
-        const text = m.text || MEDIA_LABEL[m.type] || TYPE_PT[m.type] || '';
+        const text = msgLabel(m);
         const idx = text.toLowerCase().indexOf(q);
         const snippet = idx >= 0 ? [text.slice(Math.max(0, idx - 40), idx), h('mark', null, text.slice(idx, idx + q.length)), text.slice(idx + q.length, idx + q.length + 80)] : [text];
         frag.appendChild(h('div', { class: 'search-result', onclick: () => scrollToMessage(m.id) },
@@ -681,7 +829,8 @@
   }
 
   // ---------------------------------------------------------------- eventos
-  $('chat-search').addEventListener('input', (e) => { state.query = e.target.value; renderChatList(); });
+  $('chat-search').addEventListener('input', (e) => { state.query = e.target.value; state.sidebar === 'calls' ? renderCalls() : renderChatList(); });
+  $('btn-calls').addEventListener('click', () => state.sidebar === 'calls' ? hideCalls() : showCalls());
   $('btn-filter').addEventListener('click', () => {
     state.filter = state.filter === 'all' ? 'group' : state.filter === 'group' ? 'individual' : 'all';
     const btn = $('btn-filter');

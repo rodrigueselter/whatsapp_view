@@ -369,8 +369,29 @@ a:hover { text-decoration: underline; }
 .link-preview:hover { text-decoration: none; background: rgba(11,20,26,.08); }
 .link-preview .lp-title { font-size: 13.5px; color: var(--text); }
 .link-preview .lp-url { font-size: 12px; color: var(--text-secondary); word-break: break-all; }
-.call-msg { display: flex; align-items: center; gap: 8px; color: var(--text); }
-.call-msg .call-icon { color: var(--text-icon); display: inline-flex; }
+/* chamadas (registro embutido na conversa, estilo WhatsApp Web) */
+.call-card { display: flex; align-items: center; gap: 12px; padding: 4px 6px 6px 2px; min-width: 230px; }
+.call-card .call-ico { flex: 0 0 40px; width: 40px; height: 40px; border-radius: 50%; background: rgba(11, 20, 26, .06); display: flex; align-items: center; justify-content: center; color: #ea0038; }
+.call-card .call-ico .ico { display: inline-flex; }
+.call-card .call-title { font-size: 14.2px; color: var(--text); }
+.call-card .call-sub { font-size: 12.5px; color: var(--text-secondary); display: flex; align-items: center; gap: 4px; margin-top: 2px; }
+.call-arrow { display: inline-flex; }
+.call-arrow.missed, .media-icon.missed, .chat-row-title.missed { color: #ea0038; }
+.system-msg.e2e span { background: #ffeecd; color: var(--text); display: inline-flex; align-items: center; gap: 6px; text-align: left; }
+.system-msg.e2e .lock-ico { display: inline-flex; color: var(--text-icon); flex: 0 0 auto; }
+
+/* aba Chamadas (barra lateral) */
+.calls-panel { flex: 1 1 auto; overflow-y: auto; overflow-x: hidden; }
+.calls-head { padding: 14px 16px 10px; border-bottom: 1px solid var(--border); }
+.calls-title { font-size: 16px; color: var(--text); }
+.calls-sub { font-size: 12.5px; color: var(--text-secondary); margin-top: 3px; line-height: 17px; }
+.calls-rank { padding: 10px 16px 6px; border-bottom: 1px solid var(--border); }
+.calls-rank-title { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--primary-strong); margin-bottom: 4px; }
+.calls-rank-row { display: flex; justify-content: space-between; font-size: 13px; padding: 3px 0; }
+.calls-rank-row .rank-name { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.calls-rank-row .rank-n { color: var(--text-secondary); flex: 0 0 auto; margin-left: 8px; }
+.calls-day { padding: 14px 16px 4px; font-size: 12px; color: var(--primary-strong); text-transform: uppercase; letter-spacing: .04em; }
+.call-item .chat-row-preview { gap: 4px; }
 .location-map { display: block; width: 300px; height: 150px; border-radius: 6px; background: #dfe5e7 url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='40'%3E%3Cpath d='M0 20h40M20 0v40' stroke='%23cfd5da' stroke-width='1'/%3E%3C/svg%3E"); position: relative; }
 .location-map .pin { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -100%); color: #ea0038; }
 
@@ -404,6 +425,7 @@ a:hover { text-decoration: underline; }
 .kv dd { margin: 0; color: var(--text); word-break: break-all; }
 .kv dd.mono, .mono { font-family: "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace; font-size: 12px; }
 .kv dd.muted { color: var(--text-secondary); }
+.kv dd.muted, .kv dd.wrap { word-break: normal; overflow-wrap: anywhere; }
 .participant { display: flex; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 14px; }
 .participant:last-child { border-bottom: 0; }
 .participant .p-body { flex: 1; min-width: 0; }

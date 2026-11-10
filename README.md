@@ -52,8 +52,15 @@ Abra `http://127.0.0.1:8000/`. Opções:
 - **Conversa**: balões de envio/recebimento com cauda, separadores de data,
   nome colorido do remetente em grupos, status (relógio / ✓ / ✓✓ / ✓✓ azul),
   imagens (com lightbox), vídeos, áudios (player), vCards, localização, links
-  com prévia, eventos de grupo e chamadas. Mídias ausentes no export são
-  exibidas como placeholder com nome e tamanho declarados.
+  com prévia, eventos de grupo, chamadas perdidas (cartão com ícone vermelho e
+  horário) e o aviso de ativação da criptografia de ponta a ponta (mensagem de
+  sistema amarela com cadeado). Mídias ausentes no export são exibidas como
+  placeholder com nome e tamanho declarados.
+- **Chamadas** (ícone de telefone no cabeçalho da barra lateral): histórico
+  consolidado de todas as chamadas registradas nas conversas, mais recentes
+  primeiro, agrupado por dia, com ranking dos contatos mais frequentes e busca
+  por nome/telefone/JID/ID da chamada. Clicar em uma chamada abre a conversa,
+  rola até o registro e exibe seus dados.
 - **Apoio forense** (discreto, no painel direito):
   - clique em qualquer mensagem: `Z_PK`, `ZSORT`, tipo/status com códigos
     brutos, timestamps (local, UTC ISO e valor bruto), `ZSTANZAID`,
@@ -61,9 +68,13 @@ Abra `http://127.0.0.1:8000/`. Opções:
     lido / reproduzido, decodificados de `ZRECEIPTINFO`), metadados da mídia
     (caminho original, MIME detectado por conteúdo, tamanho declarado × real,
     SHA-256 sob demanda);
+  - registro de chamada: tipo (voz), direção, interlocutor com JID, JID do
+    titular, ID da chamada (`ZSTANZAID`) e os códigos brutos
+    `ZMESSAGETYPE`/`ZGROUPEVENTTYPE` que fundamentam a interpretação;
   - cabeçalho da conversa: JID bruto/normalizado, flags da sessão, dados da
     agenda, participantes com JID e status de admin, criador/dono do grupo;
-  - menu ⋮ do painel lateral: contagens da carga e SHA-256 do ZIP e dos bancos.
+  - menu ⋮ do painel lateral: contagens da carga (inclusive chamadas e avisos
+    de criptografia), JID do titular inferido e SHA-256 do ZIP e dos bancos.
 
 ## Observações sobre o export analisado
 
@@ -80,6 +91,37 @@ Abra `http://127.0.0.1:8000/`. Opções:
 - Arquivos `.aac` do export são, na prática, Ogg/Opus; o MIME é detectado
   pelo conteúdo para que o navegador reproduza corretamente.
 
+### Chamadas (`ZMESSAGETYPE = 10`)
+
+O export não traz `CallHistory.sqlite`, logo não há registro de chamadas
+atendidas, duração ou participantes de chamadas em grupo. O que existe são os
+avisos embutidos nas conversas, todos com `ZMESSAGETYPE = 10`, `ZISFROMME = 0`,
+`ZTEXT` vazio e `ZTOJID` igual ao JID do titular. O subtipo fica em
+`ZGROUPEVENTTYPE` e foi interpretado a partir do próprio export:
+
+| `ZGROUPEVENTTYPE` | Qtd. | Interpretação | Evidência |
+| --- | --- | --- | --- |
+| 1 | 11 | chamada de voz perdida (recebida e não atendida) | ocorrem em horários dispersos, repetem-se no mesmo contato e são seguidas de textos como "só agora que vi suas ligações" |
+| 2 | 140 | ativação da criptografia de ponta a ponta na conversa | exatamente um por conversa (140 das 163); 92 deles concentrados em 05–07/04/2016, data do lançamento do E2E no WhatsApp; nas conversas criadas depois, coincide com a primeira mensagem |
+
+Versões anteriores do visualizador exibiam todos os 151 registros como
+"Chamada". Agora só o subtipo 1 entra no histórico de chamadas; o subtipo 2 é
+mostrado como aviso de sistema. Outros subtipos, se aparecerem em outro export
+(ex.: chamadas de vídeo, lançadas em novembro de 2016, depois do período deste
+banco), são exibidos como "aviso do sistema não interpretado" com os códigos
+brutos, e contados separadamente no menu ⋮.
+
+Observações úteis para a análise:
+
+- `ZSTANZAID` das chamadas perdidas é o identificador da chamada (18 caracteres
+  hexadecimais), diferente dos IDs de mensagem;
+- `ZMESSAGEDATE` desses registros tem precisão total (não sofreu o truncamento
+  que afeta as demais mensagens), portanto o horário exibido é exato;
+- o JID do titular é inferido como o `ZTOJID` mais frequente entre as mensagens
+  recebidas e exibido no menu ⋮ e nos detalhes de cada chamada;
+- em grupos o banco guarda apenas o JID do grupo como origem, por isso o
+  interlocutor individual de uma chamada em grupo não pode ser identificado.
+
 ## Estrutura
 
 ```
@@ -89,6 +131,6 @@ wa_view/
   parser.py     leitura dos bancos → modelo (chats, participantes, mensagens)
   receipts.py   decodificação de ZRECEIPTINFO (NSKeyedArchiver)
   dates.py      conversão de datas Core Data (inclui datas truncadas)
-  server.py     servidor HTTP (stdlib) — API JSON, mídias com Range, estáticos
+  server.py     servidor HTTP (stdlib) — API JSON (/api/chats, /api/calls, ...), mídias com Range, estáticos
   static/       index.html, style.css, app.js, icons.js (frontend sem dependências)
 ```

@@ -14,9 +14,17 @@ from .receipts import parse_receipts
 # ZWAMESSAGE.ZMESSAGETYPE
 MESSAGE_TYPES = {
     0: "text", 1: "image", 2: "video", 3: "audio", 4: "contact",
-    5: "location", 6: "group_event", 7: "link", 8: "document", 10: "call",
+    5: "location", 6: "group_event", 7: "link", 8: "document", 10: "system",
     11: "gif", 14: "deleted", 15: "sticker",
 }
+# ZWAMESSAGE.ZMESSAGETYPE = 10 agrupa avisos de sistema; o subtipo fica em
+# ZGROUPEVENTTYPE. Interpretação derivada do export analisado (ver README):
+#   1 -> chamada de voz perdida (confirmado pelo contexto das conversas);
+#   2 -> aviso "mensagens e chamadas protegidas com criptografia de ponta a
+#        ponta" (exatamente um por conversa; rajada em 05-07/04/2016, data do
+#        lançamento do E2E, e, nas conversas posteriores, na 1ª mensagem).
+SYSTEM_SUBTYPES = {1: "call", 2: "e2e_notice"}
+CALL_KINDS = {1: "voice"}
 # ZWAMESSAGE.ZMESSAGESTATUS (relevante para mensagens enviadas)
 STATUS_LABELS = {
     0: "received", 1: "pending", 2: "sent", 3: "failed", 5: "played",
@@ -109,6 +117,8 @@ class ChatStore:
         self.chat_index = {}
         self.messages_by_chat = defaultdict(list)
         self.push_names = {}
+        self.owner_jid = None
+        self.calls = []
         self._media_cache = {}
         self._load()
 
@@ -117,11 +127,21 @@ class ChatStore:
         conn = _connect(self.extraction.chat_db)
         try:
             self._load_push_names(conn)
+            self._infer_owner(conn)
             members = self._load_members(conn)
             self._load_chats(conn, members)
             self._load_messages(conn, members)
         finally:
             conn.close()
+
+    def _infer_owner(self, conn):
+        """JID do titular: destinatário (ZTOJID) mais frequente das mensagens recebidas."""
+        row = conn.execute(
+            """SELECT ZTOJID, COUNT(*) AS n FROM ZWAMESSAGE
+               WHERE ZISFROMME = 0 AND ZTOJID IS NOT NULL AND ZTOJID LIKE '%@s.whatsapp.net'
+               GROUP BY ZTOJID ORDER BY n DESC LIMIT 1"""
+        ).fetchone()
+        self.owner_jid = normalize_jid(row["ZTOJID"]) if row else None
 
     def _load_push_names(self, conn):
         if not _has_table(conn, "ZWAPROFILEPUSHNAME"):
@@ -242,6 +262,8 @@ class ChatStore:
             if chat is None:
                 continue
             mtype = MESSAGE_TYPES.get(r["ZMESSAGETYPE"], f"unknown_{r['ZMESSAGETYPE']}")
+            if mtype == "system":
+                mtype = SYSTEM_SUBTYPES.get(r["ZGROUPEVENTTYPE"], "system")
             from_me = bool(r["ZISFROMME"])
             sender = self._resolve_sender(r, chat, members, from_me)
             msg = {
@@ -269,15 +291,27 @@ class ChatStore:
                 "link": link_meta.get(r["Z_PK"]),
                 "receipts": receipts.get(r["Z_PK"], []),
                 "group_event": None,
+                "call": None,
+                "system": None,
             }
             if mtype == "group_event":
                 msg["group_event"] = self._group_event(r, chat)
+            elif mtype == "call":
+                msg["call"] = self._call_event(r, chat, from_me)
+                self.calls.append(self._call_entry(msg, chat))
+            elif r["ZMESSAGETYPE"] == 10:
+                msg["system"] = self._system_notice(r, chat)
             self.messages_by_chat[chat["id"]].append(msg)
 
         for chat in self.chats:
             msgs = self.messages_by_chat.get(chat["id"], [])
             chat["message_count"] = len(msgs)
             chat["last_message"] = self._preview(msgs[-1]) if msgs else None
+            chat["call_count"] = sum(1 for m in msgs if m["type"] == "call")
+            e2e = next((m for m in msgs if m["type"] == "e2e_notice"), None)
+            chat["e2e_notice_at"] = e2e["timestamp"] if e2e else None
+        # Histórico de chamadas global (aba "Chamadas"), mais recente primeiro.
+        self.calls.sort(key=lambda c: -(c["timestamp"]["unix"] if c["timestamp"] else 0))
         # Ordem da lista lateral: igual ao WhatsApp, mais recente primeiro.
         self.chats.sort(key=lambda c: -(self._chat_sort_key(c)))
 
@@ -323,6 +357,61 @@ class ChatStore:
             "target": target,
             "target_jid": text if target else None,
             "subject": text if kind in subject_kinds else None,
+        }
+
+    def _call_event(self, row, chat, from_me):
+        """Registro de chamada embutido na conversa (ZMESSAGETYPE = 10)."""
+        code = row["ZGROUPEVENTTYPE"]
+        peer_jid = row["ZFROMJID"] if not from_me else row["ZTOJID"]
+        if chat["type"] == "group" and peer_jid and peer_jid.endswith("@g.us"):
+            peer_jid = None  # chamada em grupo: o DB só guarda o JID do grupo
+        # Em conversa individual o interlocutor é o próprio contato da sessão;
+        # usa-se o mesmo nome da lista lateral (ZPARTNERNAME) por consistência.
+        peer_name = chat["name"] if chat["type"] != "group" or not peer_jid else self._display_name(peer_jid)
+        return {
+            "kind": CALL_KINDS.get(code, f"unknown_{code}"),
+            "kind_code": code,
+            # Só chamadas não atendidas geram registro em ZWAMESSAGE; as
+            # atendidas ficam em CallHistory.sqlite, ausente neste export.
+            "outcome": "missed",
+            "direction": "outgoing" if from_me else "incoming",
+            "call_id": row["ZSTANZAID"],
+            "peer_jid": peer_jid,
+            "peer_jid_normalized": normalize_jid(peer_jid),
+            "peer_name": peer_name,
+            "owner_jid": row["ZTOJID"] if not from_me else row["ZFROMJID"],
+            "group_call": chat["type"] == "group",
+        }
+
+    def _call_entry(self, msg, chat):
+        call = msg["call"]
+        return {
+            "message_id": msg["id"],
+            "chat_id": chat["id"],
+            "chat_name": chat["name"],
+            "chat_type": chat["type"],
+            "timestamp": msg["timestamp"],
+            "kind": call["kind"],
+            "kind_code": call["kind_code"],
+            "outcome": call["outcome"],
+            "direction": call["direction"],
+            "call_id": call["call_id"],
+            "peer_jid": call["peer_jid"],
+            "peer_jid_normalized": call["peer_jid_normalized"],
+            "peer_name": call["peer_name"],
+            "contact": self.contacts.lookup(call["peer_jid"]) if call["peer_jid"] else None,
+        }
+
+    def _system_notice(self, row, chat):
+        code = row["ZGROUPEVENTTYPE"]
+        kind = SYSTEM_SUBTYPES.get(code, f"unknown_{code}")
+        return {
+            "kind": kind,
+            "code": code,
+            "type_code": row["ZMESSAGETYPE"],
+            "from_jid": row["ZFROMJID"],
+            "to_jid": row["ZTOJID"],
+            "stanza_id": row["ZSTANZAID"],
         }
 
     def _load_media_items(self, conn):
@@ -394,7 +483,7 @@ class ChatStore:
     def _preview(msg):
         kind = msg["type"]
         text = msg["text"]
-        if kind == "group_event":
+        if kind in ("group_event", "call", "e2e_notice", "system"):
             text = None
         return {
             "type": kind,
@@ -403,6 +492,7 @@ class ChatStore:
             "status": msg["status"],
             "sender_name": msg["sender"]["name"],
             "timestamp": msg["timestamp"],
+            "call_kind": msg["call"]["kind"] if msg.get("call") else None,
         }
 
     # ------------------------------------------------------------------- api
@@ -413,6 +503,14 @@ class ChatStore:
             "messages": sum(len(m) for m in self.messages_by_chat.values()),
             "media_linked": len(self._media_cache),
             "contacts": len(self.contacts.by_wa_id),
+            "calls": len(self.calls),
+            "e2e_notices": sum(
+                1 for msgs in self.messages_by_chat.values() for m in msgs if m["type"] == "e2e_notice"
+            ),
+            "system_unknown": sum(
+                1 for msgs in self.messages_by_chat.values() for m in msgs if m["type"] == "system"
+            ),
+            "owner_jid": self.owner_jid,
             "integrity": self.extraction.integrity,
         }
 
@@ -428,6 +526,10 @@ class ChatStore:
 
     def messages(self, chat_id):
         return self.messages_by_chat.get(chat_id, [])
+
+    def call_log(self):
+        """Todas as chamadas registradas nas conversas, mais recentes primeiro."""
+        return self.calls
 
     def media_path(self, media_id):
         return self._media_cache.get(media_id)

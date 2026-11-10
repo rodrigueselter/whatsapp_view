@@ -101,6 +101,8 @@ def make_handler(store):
                 return self._send_json(store.summary())
             if path == "/api/chats":
                 return self._send_json(store.chat_list())
+            if path == "/api/calls":
+                return self._send_json(store.call_log())
             m = re.fullmatch(r"/api/chats/(\d+)", path)
             if m:
                 chat = store.chat(int(m.group(1)))
