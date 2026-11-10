@@ -25,6 +25,23 @@ Linux / macOS:
 python3 -m wa_view caminho/para/export.zip --port 8000
 ```
 
+Windows, sem terminal (duplo clique na pasta do repositório):
+
+| Arquivo | O que faz |
+| --- | --- |
+| `iniciar.cmd` | abre uma janela para escolher o `.zip`, inicia o servidor e abre o navegador. Cancelar a janela sobe a interface de upload. |
+| `iniciar-interface.cmd` | sobe direto a interface de upload (o `.zip` é enviado pelo navegador). |
+
+Os dois chamam `iniciar.ps1`, que localiza o Python 3.9+ (`py`, `python` ou
+`python3`, ignorando o atalho da Microsoft Store), usa a próxima porta livre
+se a 8000 estiver ocupada e encerra o servidor quando a janela é fechada.
+O `.ps1` também aceita parâmetros, por exemplo em um atalho:
+
+```powershell
+.\iniciar.ps1 -Export "D:\casos\export.zip" -Port 8080 -Media "D:\casos\Media"
+.\iniciar.ps1 -Interface -NoBrowser
+```
+
 Windows (PowerShell), dentro da pasta do repositório:
 
 ```powershell
@@ -201,6 +218,7 @@ Observações úteis para a análise:
 ## Estrutura
 
 ```
+iniciar.cmd / iniciar-interface.cmd / iniciar.ps1   inicializadores Windows (duplo clique)
 wa_view/
   __main__.py   CLI
   extractor.py  extração segura do ZIP (limites, CRC), índice de mídias, SHA-256, MIME
